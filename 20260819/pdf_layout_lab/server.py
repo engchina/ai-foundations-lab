@@ -83,6 +83,7 @@ APP_CSS = """
 .setting-help strong { color: #334155; }
 .preset-radio { margin-top: 2px; }
 .settings-row { align-items: flex-start; gap: 16px; margin-top: 10px; }
+.run-button { width: 100%; margin-top: 12px; }
 .setting-card { min-width: 0; }
 .gradio-container footer,
 footer { display: none !important; }
@@ -260,7 +261,6 @@ def build_gradio_blocks(viewer_ready: bool):
                         choices=choices,
                         value=default_choices,
                     )
-                    run_button = gr.Button("解析を実行", variant="primary")
             page_range = gr.Textbox(value="1", visible=False)
             with gr.Accordion("モデルの常駐管理（GPU / メモリ）", open=False):
                 gr.Markdown(
@@ -323,6 +323,7 @@ def build_gradio_blocks(viewer_ready: bool):
                             step=1,
                             value=default_dpi,
                         )
+            run_button = gr.Button("解析を実行", variant="primary", elem_classes=["run-button"])
             viewer = gr.HTML(_preview_placeholder_html())
 
         def preview(pdf_file_value, dpi_value):
