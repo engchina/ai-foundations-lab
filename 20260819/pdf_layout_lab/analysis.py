@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .adapters import ENGINE_LABELS, ENGINE_ORDER, build_adapters
 from .adapters.base import AnalysisContext
+from . import model_pool
 from .jsonl import write_jsonl
 from .pages import parse_page_range
 from .rendering import get_source_page_count, prepare_source_for_analysis
@@ -102,6 +103,9 @@ def analyze_pdf(
             )
         )
 
+    # モデルは常駐させたまま、解放済みの VRAM だけ返す（失敗した解析の作業メモリを他プロセスへ渡すため）
+    model_pool.trim_cuda_cache()
+
     json_path = run_dir / "results.json"
     jsonl_path = run_dir / "results.jsonl"
     viewer_data_path = run_dir / "viewer-data.json"
@@ -116,6 +120,7 @@ def analyze_pdf(
         json_path=str(json_path),
         jsonl_path=str(jsonl_path),
         viewer_data_path=str(viewer_data_path),
+        source_page_count=page_count,
     )
     write_json(json_path, run.to_dict())
     write_jsonl(jsonl_path, records, pages)
@@ -163,6 +168,7 @@ def preview_pdf(
         json_path=str(json_path),
         jsonl_path=str(jsonl_path),
         viewer_data_path=str(viewer_data_path),
+        source_page_count=page_count,
     )
     write_json(json_path, run.to_dict())
     write_jsonl(jsonl_path, [], pages)
@@ -170,8 +176,13 @@ def preview_pdf(
     return run
 
 
+def _page_summary(run: AnalysisRun) -> str:
+    analyzed = ", ".join(str(page.page) for page in run.pages)
+    return f"{analyzed} ページ目 / 全 {run.source_page_count} ページ"
+
+
 def summarize_run(run: AnalysisRun) -> str:
-    lines = [f"### 解析結果", f"- Run ID: `{run.run_id}`", f"- ファイル: `{run.pdf_name}`", f"- ページ数: {len(run.pages)}", ""]
+    lines = [f"### 解析結果", f"- Run ID: `{run.run_id}`", f"- ファイル: `{run.pdf_name}`", f"- 解析ページ: {_page_summary(run)}", ""]
     for status in run.statuses:
         state = "有効" if status.available else "無効"
         elapsed = f" / {status.elapsed_seconds:.3f}s" if status.elapsed_seconds is not None else ""
@@ -185,7 +196,7 @@ def summarize_preview(run: AnalysisRun) -> str:
             "### ファイルプレビュー",
             f"- Run ID: `{run.run_id}`",
             f"- ファイル: `{run.pdf_name}`",
-            f"- ページ数: {len(run.pages)}",
+            f"- ページ数: {run.source_page_count}",
             "- 解析はまだ実行されていません。",
         ]
     )

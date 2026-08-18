@@ -77,25 +77,30 @@ PDF_LAYOUT_LAB_PORT=7860
 
 ## macOS でのデプロイ
 
-macOS では Homebrew で Python 3.12、uv、Node.js を用意します。Apple Silicon / Intel Mac のどちらでも同じ手順で進められます。
+torch を使うエンジン（dots.mocr、Docling、YOLOv10、MinerU、Unstructured）は **Apple Silicon + macOS 14 以上**が前提です。PyPI の PyTorch wheel は `macosx_14_0_arm64` だけで、Intel Mac 向けの wheel はありません。Intel Mac では Gradio + PyMuPDF + OCI Document Understanding までが動作範囲です。
+
+Homebrew では uv と Node.js だけを入れます。Python は `uv venv --python 3.12` が管理版 CPython 3.12 を自動取得するため、`brew install python@3.12` は不要です。
 
 ```bash
-brew install python@3.12 uv node
+brew install uv node
 
-python3.12 --version
 uv --version
 node --version
-npm --version
 ```
 
 React ビューアのビルドには Node.js `20.19` 以上、または `22.12` 以上が必要です。`node --version` が古い場合は `brew upgrade node` で更新してください。
+
+Unstructured を使う場合だけ、OCR / PDF 用のシステムパッケージも入れます。
+
+```bash
+brew install poppler tesseract tesseract-lang libmagic
+```
 
 リポジトリを配置したディレクトリで、仮想環境を作成して依存関係を入れます。
 
 ```bash
 rm -rf .venv
 uv --cache-dir /tmp/uv-cache-pdf-layout-lab venv --python 3.12 .venv
-source .venv/bin/activate
 uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -r requirements.txt
 uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python pip
 
@@ -107,10 +112,32 @@ cd ..
 cp .env.example .env
 ```
 
-ローカル利用では既定の `127.0.0.1:7860` のままで十分です。起動後、ブラウザで `http://127.0.0.1:7860` を開きます。
+追加エンジンを入れるときは、macOS では PyTorch CPU index を **付けません**。`https://download.pytorch.org/whl/cpu` には manylinux と Windows の wheel しか無いため、`--extra-index-url` を付けると解決に失敗する場合があります。PyPI の wheel がそのまま Metal (MPS) 対応です。
 
 ```bash
-source .venv/bin/activate
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[dots,oci,unstructured,docling,pp-doclayout,paddle,yolo,mineru,dev]'
+```
+
+Apple Silicon の GPU (MPS) を使う場合は `.env` を次のようにします。
+
+```bash
+DOCLING_DEVICE=mps
+DOTS_MOCR_DEVICE=auto
+MINERU_DEVICE_MODE=mps
+PP_DOCLAYOUT_DEVICE=auto
+```
+
+`DOTS_MOCR_DEVICE=auto` は CUDA が無ければ MPS を選びます。PP-DocLayoutV3 は `onnxruntime` engine のため CPU 実行です。MPS 未対応の演算で `RuntimeError` になる場合は、CPU へフォールバックさせて起動します。
+
+```bash
+PYTORCH_ENABLE_MPS_FALLBACK=1 .venv/bin/python app.py
+```
+
+dots.mocr は bf16 の重みだけで約 5.7 GB を使うため、ユニファイドメモリ 16 GB 以上を推奨します。
+
+ローカル利用では既定の `127.0.0.1:7860` のままで十分です。起動後、ブラウザで `http://127.0.0.1:7860` を開きます。`app.py` はプロジェクト直下の `.venv` を自動で使うため、`source .venv/bin/activate` は不要です。
+
+```bash
 .venv/bin/python app.py
 ```
 
@@ -141,7 +168,7 @@ PyTorch CPU index と PyPI の両方を使うため、`uv` の index 解決で�
 | OCI Document Understanding | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[oci]'` | `.env` に `OCI_COMPARTMENT_ID`、必要に応じて `OCI_CONFIG_FILE` と `OCI_PROFILE` を設定します。 |
 | Unstructured | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[unstructured]'` | high-res partition 用の依存が入ります。環境によっては OCR 関連のシステムパッケージが別途必要です。 |
 | Docling | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[docling]' --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match` | CPU 実行では `DOCLING_DEVICE=cpu` を使います。初回実行時にモデルや追加データの取得が発生する場合があります。 |
-| PP-DocLayoutV3 | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[pp-doclayout]'` | CPU 向けに PaddleOCR の `onnxruntime` engine で実行します。既定は `PP_DOCLAYOUT_MODEL=PP-DocLayoutV3`、`PP_DOCLAYOUT_ENGINE=onnxruntime` です。 |
+| PP-DocLayoutV3 | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[pp-doclayout]'` | CPU 向けに PaddleOCR の `onnxruntime` engine で実行します。既定は `PP_DOCLAYOUT_MODEL=PP-DocLayoutV3`、`PP_DOCLAYOUT_ENGINE=onnxruntime`、`PP_DOCLAYOUT_DEVICE=auto` です。 |
 | PP-DocLayoutV3 (PaddlePaddle) | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[paddle]'` | PaddlePaddle の `paddle_static` / `paddle_dynamic` engine で実行したい場合に使います。 |
 | YOLOv10 DocLayNet | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[yolo]' --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match` | `YOLOV10_MODEL_PATH=models/yolov10x_best.pt` に重みファイルを配置するか、`.env` でパスを変更します。 |
 | MinerU / MinerU2.5-Pro | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[mineru]' --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match` | CPU 実行向けに `mineru[core]` を入れ、`MINERU_BACKEND=pipeline` を使います。初回実行時にモデル取得が発生する場合があります。 |
@@ -228,9 +255,12 @@ uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/pytho
 
 ```bash
 PP_DOCLAYOUT_MODEL=PP-DocLayoutV3
+PP_DOCLAYOUT_DEVICE=auto
 PP_DOCLAYOUT_ENGINE=onnxruntime
 PP_DOCLAYOUT_MODEL_SOURCE=BOS
 ```
+
+`PP_DOCLAYOUT_DEVICE=auto` では、`onnxruntime` engine のときに CPU 版 onnxruntime（`CUDAExecutionProvider` なし）なら自動的に `cpu` で実行します。同じ環境に CUDA 対応の PyTorch が入っていると PaddleX の既定 device が `gpu` になり、CPU 版 onnxruntime では `ONNX Runtime GPU inference is unavailable` エラーになるための対策です。GPU で動かす場合は `onnxruntime-gpu` を入れるか、`PP_DOCLAYOUT_DEVICE=gpu` を明示してください。
 
 `PP_DOCLAYOUT_MODEL_SOURCE=BOS` は、Hugging Face に接続できない環境でも PaddleOCR 公式モデルを取得しやすくするための設定です。PaddlePaddle の `paddle_static` engine を使う場合は `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[paddle]'` を実行し、`PP_DOCLAYOUT_ENGINE=paddle_static` に変更してください。
 
@@ -267,7 +297,7 @@ MinerU の `model.json`、`middle.json`、`content_list.json`、`content_list_v2
 
 ### YOLOv10 の重み
 
-`moured/YOLOv10-Document-Layout-Analysis` の `yolov10x_best.pt` を利用する場合は、例えば次のように配置します。
+`omoured/YOLOv10-Document-Layout-Analysis` の `yolov10x_best.pt` を利用する場合は、例えば次のように配置します。
 
 ```bash
 mkdir -p models
@@ -295,6 +325,28 @@ YOLOV10_MODEL_PATH=/path/to/yolov10x_best.pt
 3. 使用するエンジンを選択します。OCI Document Understanding の直後に MinerU / MinerU2.5-Pro が表示されます。
 4. `解析を実行` を押します。
 5. React ビューアでページとエンジンを切り替え、JSONL 行をクリックして bbox を確認します。
+
+## モデルの常駐管理（GPU / メモリ）
+
+dots.mocr、YOLOv10、Docling、PP-DocLayoutV3、Unstructured のモデルは、一度ロードするとアプリを止めるか UI で解放するまでプロセス内（GPU 利用時は VRAM 上）に常駐します。同じエンジンを繰り返し試すときに毎回ロードし直さないためのものです。
+
+画面の「モデルの常駐管理（GPU / メモリ）」を開くと、次の操作ができます。
+
+- 対象エンジンを選んで **ロード（常駐）**: 解析前にモデルを読み込んでおく
+- **解放** / **すべて解放**: VRAM を空ける（他のエンジンや他プロセスに VRAM を渡したいとき）
+- 常駐中のモデルと VRAM 使用量（このプロセス / GPU 全体）は 5 秒ごとに自動更新されます
+
+MinerU は CLI の子プロセスとして動くため常駐できず、実行のたびにモデルをロードします。OCI Document Understanding は外部 API、PyMuPDF はモデルを使いません。
+
+`.env` でエンジンの設定（モデル名や device など）を変えた場合、常駐中のモデルは次の解析時に自動的に作り直されます。
+
+### dots.mocr を GPU で動かすときのメモリ
+
+dots.mocr の重みは bf16 で約 5.7 GB、300 DPI の A4 ページ 1 枚を解析したときのピーク VRAM は約 7.7 GB です（RTX 5080 Laptop 16 GB で確認）。
+
+`flash_attn` が無い環境では dots.mocr の SDPA 版 vision attention が PyTorch の math 実装にフォールバックし、画像パッチ数 N（300 DPI で約 44,000）に対して N×N の行列を実体化するため、`CUDA out of memory. Tried to allocate 88.53 GiB` のようなエラーになります。アプリ側でこの attention をメモリ効率の良いカーネルが使える形に差し替えているため、`flash_attn` 無しでも上記のメモリで動きます。CPU 実行にする必要はありません（CPU では 1 ページに数分〜数十分かかります）。
+
+それでも VRAM が足りない場合は、常駐管理で他のモデルを解放するか、ページ画像 DPI を下げてください。
 
 ## dots.mocr のプロンプト
 

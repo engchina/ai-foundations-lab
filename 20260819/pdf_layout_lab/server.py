@@ -4,7 +4,8 @@ import math
 from pathlib import Path
 from typing import Any, TypeVar
 
-from .adapters import ENGINE_LABELS, ENGINE_ORDER
+from . import model_pool
+from .adapters import ENGINE_LABELS, ENGINE_ORDER, build_adapters
 from .analysis import analyze_pdf, preview_pdf, summarize_preview, summarize_run
 from .bootstrap import exec_project_venv_if_available
 from .rendering import SUPPORTED_SOURCE_FILE_TYPES
@@ -173,6 +174,51 @@ def _error_html(message: str) -> str:
     """
 
 
+# モデルをプロセス内に常駐できるエンジン。MinerU は CLI 子プロセス、OCI は外部 API、PyMuPDF はモデル無し。
+RESIDENT_ENGINES = ["dots_mocr", "yolov10", "docling", "pp_doclayout_v3", "unstructured"]
+
+
+def model_status_markdown() -> str:
+    loaded = set(model_pool.loaded())
+    lines = ["**常駐中のモデル**"]
+    for engine_id in RESIDENT_ENGINES:
+        state = "🟢 ロード済み" if engine_id in loaded else "⚪ 未ロード"
+        lines.append(f"- {ENGINE_LABELS[engine_id]}: {state}")
+    lines.append(f"- MinerU / MinerU2.5-Pro: CLI 実行のため毎回ロード（常駐不可）")
+    lines.append("")
+    lines.append(f"**VRAM**: {model_pool.gpu_summary()}")
+    return "\n".join(lines)
+
+
+def load_engine_model(label: str) -> str:
+    engine_id = next((engine for engine, engine_label in ENGINE_LABELS.items() if engine_label == label), None)
+    if engine_id not in RESIDENT_ENGINES:
+        return f"### {label} は常駐対象外です\n\n" + model_status_markdown()
+    adapter = build_adapters(get_settings()).get(engine_id)
+    if adapter is None:
+        return f"### {label} は無効化されています\n\n" + model_status_markdown()
+    availability = adapter.availability()
+    if not availability.available:
+        return f"### {label} をロードできません\n\n{availability.message}\n\n" + model_status_markdown()
+    try:
+        adapter.preload()
+    except Exception as exc:
+        return f"### {label} のロードに失敗しました\n\n{exc}\n\n" + model_status_markdown()
+    return model_status_markdown()
+
+
+def unload_engine_model(label: str) -> str:
+    engine_id = next((engine for engine, engine_label in ENGINE_LABELS.items() if engine_label == label), None)
+    if engine_id:
+        model_pool.unload(engine_id)
+    return model_status_markdown()
+
+
+def unload_all_models() -> str:
+    model_pool.unload_all()
+    return model_status_markdown()
+
+
 def build_gradio_blocks(viewer_ready: bool):
     import gradio as gr
 
@@ -212,6 +258,25 @@ def build_gradio_blocks(viewer_ready: bool):
                     run_button = gr.Button("解析を実行", variant="primary")
                     summary = gr.Markdown("")
             page_range = gr.Textbox(value="1", visible=False)
+            with gr.Accordion("モデルの常駐管理（GPU / メモリ）", open=False):
+                gr.Markdown(
+                    """
+                    一度使ったエンジンのモデルは、ここで解放するまでプロセス内（GPU 利用時は VRAM 上）に常駐します。
+                    同じエンジンを繰り返し試すときは事前にロードしておくと 2 回目以降が速くなります。VRAM が足りないときは不要なモデルを解放してください。
+                    """,
+                    elem_classes=["setting-help"],
+                )
+                with gr.Row():
+                    model_engine = gr.Dropdown(
+                        label="対象エンジン",
+                        choices=[ENGINE_LABELS[engine] for engine in RESIDENT_ENGINES],
+                        value=ENGINE_LABELS[RESIDENT_ENGINES[0]],
+                    )
+                    load_button = gr.Button("ロード（常駐）")
+                    unload_button = gr.Button("解放")
+                    unload_all_button = gr.Button("すべて解放", variant="stop")
+                model_status = gr.Markdown(model_status_markdown())
+                status_timer = gr.Timer(5)
             with gr.Row(elem_classes=["settings-row"]):
                 with gr.Column(scale=2, min_width=360, elem_classes=["setting-card"]):
                     gr.Markdown(
@@ -287,9 +352,10 @@ def build_gradio_blocks(viewer_ready: bool):
                 return (
                     _viewer_frame(run_result.run_id, viewer_ready),
                     summarize_run(run_result),
+                    model_status_markdown(),
                 )
             except Exception as exc:
-                return _error_html(str(exc)), f"### 解析できませんでした\n\n{exc}"
+                return _error_html(str(exc)), f"### 解析できませんでした\n\n{exc}", model_status_markdown()
 
         def select_confidence_preset(label):
             return _preset_value_for_label(CONFIDENCE_PRESETS, label, DEFAULT_MIN_CONFIDENCE)
@@ -331,9 +397,13 @@ def build_gradio_blocks(viewer_ready: bool):
         run_button.click(
             fn=run,
             inputs=[pdf_file, page_range, engines, min_confidence, dpi],
-            outputs=[viewer, summary],
+            outputs=[viewer, summary, model_status],
             js=RUN_PAGE_SELECTION_JS,
         )
+        load_button.click(fn=load_engine_model, inputs=model_engine, outputs=model_status)
+        unload_button.click(fn=unload_engine_model, inputs=model_engine, outputs=model_status)
+        unload_all_button.click(fn=unload_all_models, outputs=model_status)
+        status_timer.tick(fn=model_status_markdown, outputs=model_status)
     return demo
 
 

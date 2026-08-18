@@ -70,6 +70,7 @@ class Settings:
     yolov10_model_path: str
     pp_doclayout_model: str
     pp_doclayout_engine: str
+    pp_doclayout_device: str
     pp_doclayout_model_source: str
     mineru_output_dir: str
     mineru_command: str
@@ -113,6 +114,7 @@ def get_settings() -> Settings:
         yolov10_model_path=os.environ.get("YOLOV10_MODEL_PATH", "models/yolov10x_best.pt"),
         pp_doclayout_model=os.environ.get("PP_DOCLAYOUT_MODEL", "PP-DocLayoutV3"),
         pp_doclayout_engine=os.environ.get("PP_DOCLAYOUT_ENGINE", "onnxruntime"),
+        pp_doclayout_device=os.environ.get("PP_DOCLAYOUT_DEVICE", "auto"),
         pp_doclayout_model_source=os.environ.get("PP_DOCLAYOUT_MODEL_SOURCE", "BOS"),
         mineru_output_dir=os.environ.get("MINERU_OUTPUT_DIR", ""),
         mineru_command=os.environ.get("MINERU_COMMAND", "auto"),

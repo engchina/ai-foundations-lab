@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from pdf_layout_lab import model_pool
 from pdf_layout_lab.categories import normalize_category
 from pdf_layout_lab.coordinates import clamp_bbox
 from pdf_layout_lab.schemas import LayoutRecord
@@ -32,6 +33,43 @@ class PpDocLayoutV3Adapter:
             ),
         )
 
+    def preload(self) -> None:
+        """モデルを事前にロードして常駐させる（UI の「ロード」ボタン用）。"""
+        _prepare_runtime_env(self.settings)
+        if has_module("paddleocr"):
+            self._paddleocr_model()
+        elif has_module("transformers") and has_module("torch") and _transformers_supports_pp_doclayout_v3():
+            self._transformers_model()
+
+    def _transformers_model(self):
+        model_name = self.settings.pp_doclayout_model
+        if model_name == "PP-DocLayoutV3":
+            model_name = "PaddlePaddle/PP-DocLayoutV3_safetensors"
+
+        def load():
+            from transformers import AutoImageProcessor, AutoModelForObjectDetection
+
+            processor = AutoImageProcessor.from_pretrained(model_name)
+            model = AutoModelForObjectDetection.from_pretrained(model_name)
+            model.eval()
+            return processor, model
+
+        return model_pool.get(self.engine_id, load, signature=("transformers", model_name))
+
+    def _paddleocr_model(self):
+        device = _resolve_paddleocr_device(self.settings)
+        signature = ("paddleocr", self.settings.pp_doclayout_model, self.settings.pp_doclayout_engine, device)
+
+        def load():
+            from paddleocr import LayoutDetection
+
+            kwargs = {"model_name": self.settings.pp_doclayout_model, "engine": self.settings.pp_doclayout_engine}
+            if device:
+                kwargs["device"] = device
+            return LayoutDetection(**kwargs)
+
+        return model_pool.get(self.engine_id, load, signature=signature)
+
     def analyze(self, context: AnalysisContext) -> list[LayoutRecord]:
         if has_module("paddleocr"):
             return self._analyze_paddleocr(context)
@@ -40,17 +78,11 @@ class PpDocLayoutV3Adapter:
         raise RuntimeError(self.availability().message)
 
     def _analyze_transformers(self, context: AnalysisContext) -> list[LayoutRecord]:
-        _prepare_runtime_env(context, self.settings)
+        _prepare_runtime_env(self.settings)
         import torch
         from PIL import Image
-        from transformers import AutoImageProcessor, AutoModelForObjectDetection
 
-        model_name = self.settings.pp_doclayout_model
-        if model_name == "PP-DocLayoutV3":
-            model_name = "PaddlePaddle/PP-DocLayoutV3_safetensors"
-        processor = AutoImageProcessor.from_pretrained(model_name)
-        model = AutoModelForObjectDetection.from_pretrained(model_name)
-        model.eval()
+        processor, model = self._transformers_model()
         records: list[LayoutRecord] = []
         for page in context.pages:
             image = Image.open(page.image_path).convert("RGB")
@@ -87,10 +119,8 @@ class PpDocLayoutV3Adapter:
         return records
 
     def _analyze_paddleocr(self, context: AnalysisContext) -> list[LayoutRecord]:
-        _prepare_runtime_env(context, self.settings)
-        from paddleocr import LayoutDetection
-
-        model = LayoutDetection(model_name=self.settings.pp_doclayout_model, engine=self.settings.pp_doclayout_engine)
+        _prepare_runtime_env(self.settings)
+        model = self._paddleocr_model()
         records: list[LayoutRecord] = []
         for page in context.pages:
             output = model.predict(input=str(Path(page.image_path)), batch_size=1, layout_nms=True)
@@ -126,6 +156,22 @@ class PpDocLayoutV3Adapter:
         return records
 
 
+def _resolve_paddleocr_device(settings: Settings) -> str | None:
+    """PP_DOCLAYOUT_DEVICE=auto のとき、onnxruntime engine なら CUDA provider の有無で cpu/gpu を決める。
+
+    PaddleX は torch が CUDA 対応だと既定 device を gpu にするが、CPU 版 onnxruntime では
+    CUDAExecutionProvider が無く実行時エラーになるため、ここで明示する。
+    """
+    value = (settings.pp_doclayout_device or "auto").strip().lower()
+    if value != "auto":
+        return value
+    if settings.pp_doclayout_engine.strip().lower() != "onnxruntime" or not has_module("onnxruntime"):
+        return None
+    import onnxruntime
+
+    return "gpu" if "CUDAExecutionProvider" in onnxruntime.get_available_providers() else "cpu"
+
+
 def _transformers_supports_pp_doclayout_v3() -> bool:
     try:
         import transformers
@@ -141,8 +187,8 @@ def _transformers_supports_pp_doclayout_v3() -> bool:
         return False
 
 
-def _prepare_runtime_env(context: AnalysisContext, settings: Settings) -> None:
-    cache_root = context.settings.output_dir / "_cache" / "pp_doclayout_v3"
+def _prepare_runtime_env(settings: Settings) -> None:
+    cache_root = settings.output_dir / "_cache" / "pp_doclayout_v3"
     cache_root.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("XDG_CACHE_HOME", str(cache_root / "xdg"))
     os.environ.setdefault("HF_HOME", str(cache_root / "huggingface"))

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from pdf_layout_lab import model_pool
 from pdf_layout_lab.categories import normalize_category
 from pdf_layout_lab.coordinates import clamp_bbox, pdf_bottom_left_to_image_top_left
 from pdf_layout_lab.schemas import LayoutRecord
@@ -23,10 +24,26 @@ class DoclingAdapter:
             return AdapterAvailability(False, missing_dependency_message("Docling", extra_install_command("docling")))
         return AdapterAvailability(True, f"Docling を `{self.settings.docling_device}` device で実行し、provenance bbox を読み取ります。")
 
+    def preload(self) -> None:
+        """DocumentConverter を事前に用意して常駐させる（UI の「ロード」ボタン用）。"""
+        _prepare_docling_env(self.settings)
+        self._converter()
+
+    def _converter(self):
+        signature = (
+            self.settings.docling_device,
+            self.settings.docling_num_threads,
+            self.settings.docling_do_ocr,
+            self.settings.docling_do_table_structure,
+        )
+        return model_pool.get(self.engine_id, lambda: _build_docling_converter(self.settings), signature=signature)
+
     def analyze(self, context: AnalysisContext) -> list[LayoutRecord]:
-        _prepare_docling_env(context, self.settings)
-        converter = _build_docling_converter(self.settings)
-        result = converter.convert(str(context.pdf_path))
+        _prepare_docling_env(self.settings)
+        converter = self._converter()
+        # 解析対象ページだけ変換する（既定は PDF 全ページ変換で、1 ページ指定でも全体を処理してしまう）
+        page_numbers = [page.page for page in context.pages]
+        result = converter.convert(str(context.pdf_path), page_range=(min(page_numbers), max(page_numbers)))
         document = result.document
         if hasattr(document, "export_to_dict"):
             payload = document.export_to_dict()
@@ -80,8 +97,8 @@ class DoclingAdapter:
         return records
 
 
-def _prepare_docling_env(context: AnalysisContext, settings: Settings) -> None:
-    cache_root = context.settings.output_dir / "_cache" / "docling"
+def _prepare_docling_env(settings: Settings) -> None:
+    cache_root = (settings.output_dir / "_cache" / "docling").resolve()
     cache_root.mkdir(parents=True, exist_ok=True)
     # Docling と OCR / PyTorch 系のキャッシュをプロジェクト配下へ寄せる。
     os.environ.setdefault("XDG_CACHE_HOME", str(cache_root / "xdg"))

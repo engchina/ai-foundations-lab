@@ -35,6 +35,7 @@ type ViewerData = {
   run_id: string;
   pdf_name: string;
   pages: PageImage[];
+  source_page_count?: number;
   records: LayoutRecord[];
   engines: EngineStatus[];
 };
@@ -107,7 +108,8 @@ function App() {
       .finally(() => setLoading(false));
   }, [runId]);
 
-  const page = data?.pages.find((item) => item.page === pageNumber) ?? data?.pages[0];
+  const sourcePageCount = data?.source_page_count ?? data?.pages[data.pages.length - 1]?.page ?? 1;
+  const page = data?.pages.find((item) => item.page === pageNumber) ?? null;
   const selectedRecord = React.useMemo(
     () => data?.records.find((record) => record.id === selectedId) ?? null,
     [data, selectedId],
@@ -117,11 +119,11 @@ function App() {
     [data, selectedEngine],
   );
   const pageRecords = React.useMemo(() => {
-    if (!data || !page) return [];
+    if (!data) return [];
     return data.records
-      .filter((record) => record.engine === selectedEngine && record.page === page.page)
+      .filter((record) => record.engine === selectedEngine && record.page === pageNumber)
       .sort((a, b) => a.seq_no - b.seq_no);
-  }, [data, page, selectedEngine]);
+  }, [data, pageNumber, selectedEngine]);
 
   React.useEffect(() => {
     if (!data) return;
@@ -136,9 +138,7 @@ function App() {
   }, [goToPage, pageNumber, runId]);
 
   function changePage(nextPage: number) {
-    if (!data) return;
-    const pages = data.pages.map((item) => item.page);
-    if (!pages.includes(nextPage)) return;
+    if (!data || nextPage < 1 || nextPage > sourcePageCount) return;
     setPageNumber(nextPage);
     setGoToPage(String(nextPage));
   }
@@ -169,7 +169,7 @@ function App() {
     );
   }
 
-  if (error || !data || !page) {
+  if (error || !data) {
     return (
       <main className="center-state error-state">
         <h1>表示できません</h1>
@@ -178,9 +178,6 @@ function App() {
     );
   }
 
-  const pageIndex = data.pages.findIndex((item) => item.page === page.page);
-  const previousPage = data.pages[Math.max(0, pageIndex - 1)]?.page ?? page.page;
-  const nextPage = data.pages[Math.min(data.pages.length - 1, pageIndex + 1)]?.page ?? page.page;
   const isPreviewOnly = data.engines.length === 0;
 
   return (
@@ -208,20 +205,20 @@ function App() {
         <button
           type="button"
           aria-label="前のページ"
-          disabled={pageIndex <= 0}
-          onClick={() => changePage(previousPage)}
+          disabled={pageNumber <= 1}
+          onClick={() => changePage(pageNumber - 1)}
         >
           <ChevronLeft aria-hidden="true" />
         </button>
         <form onSubmit={submitGoToPage} className="page-jump">
           <span>
-            ページ {page.page} / {data.pages[data.pages.length - 1]?.page ?? page.page}
+            ページ {pageNumber} / {sourcePageCount}
           </span>
           <input
             aria-label="ページ番号"
             type="number"
-            min={data.pages[0]?.page ?? 1}
-            max={data.pages[data.pages.length - 1]?.page ?? 1}
+            min={1}
+            max={sourcePageCount}
             value={goToPage}
             onChange={(event) => setGoToPage(event.target.value)}
           />
@@ -230,8 +227,8 @@ function App() {
         <button
           type="button"
           aria-label="次のページ"
-          disabled={pageIndex >= data.pages.length - 1}
-          onClick={() => changePage(nextPage)}
+          disabled={pageNumber >= sourcePageCount}
+          onClick={() => changePage(pageNumber + 1)}
         >
           <ChevronRight aria-hidden="true" />
         </button>
@@ -267,7 +264,15 @@ function App() {
         className={isPreviewOnly ? "split-viewer preview-only" : "split-viewer"}
         aria-label={isPreviewOnly ? "ファイルプレビュー" : "ファイルと JSONL"}
       >
-        <PDFPane page={page} selectedRecord={selectedRecord} onClear={() => setSelectedId("")} />
+        {page ? (
+          <PDFPane page={page} selectedRecord={selectedRecord} onClear={() => setSelectedId("")} />
+        ) : (
+          <div className="pdf-pane">
+            <p className="engine-message">
+              {pageNumber} ページ目はこの解析に含まれていません。このまま「解析を実行」すると、このページを解析します。
+            </p>
+          </div>
+        )}
         {!isPreviewOnly && (
           <JSONLTable
             records={pageRecords}

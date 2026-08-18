@@ -281,3 +281,61 @@ class DotsMocrRuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VisionSdpaAttentionPatchTests(unittest.TestCase):
+    """SDPA 版 vision attention の差し替えが、元実装と同じ結果を返すことを確認する。"""
+
+    def test_patched_forward_matches_original(self):
+        try:
+            import torch
+            import torch.nn.functional as F
+        except ImportError:
+            self.skipTest("torch が未インストールです。")
+        from pdf_layout_lab.adapters.dots_mocr import _patch_vision_sdpa_attention
+
+        module = types.ModuleType("fake_modeling_dots_vision")
+
+        def apply_rotary_pos_emb_vision(tensor, freqs):
+            return tensor  # 等価性の確認には回転位置埋め込みの中身は関係ないので恒等写像にする
+
+        module.apply_rotary_pos_emb_vision = apply_rotary_pos_emb_vision
+
+        class VisionSdpaAttention(torch.nn.Module):
+            def __init__(self, dim, num_heads):
+                super().__init__()
+                self.num_heads = num_heads
+                self.qkv = torch.nn.Linear(dim, dim * 3)
+                self.proj = torch.nn.Linear(dim, dim)
+
+            def forward(self, hidden_states, cu_seqlens, rotary_pos_emb=None):
+                # dots.mocr の元実装をそのまま写したもの（3 次元 + bool マスク）
+                seq_length = hidden_states.shape[0]
+                q, k, v = self.qkv(hidden_states).reshape(seq_length, 3, self.num_heads, -1).permute(1, 0, 2, 3).unbind(0)
+                q = apply_rotary_pos_emb_vision(q.unsqueeze(0), rotary_pos_emb).squeeze(0)
+                k = apply_rotary_pos_emb_vision(k.unsqueeze(0), rotary_pos_emb).squeeze(0)
+                attention_mask = torch.zeros([1, seq_length, seq_length], device=q.device, dtype=torch.bool)
+                for i in range(1, len(cu_seqlens)):
+                    attention_mask[..., cu_seqlens[i - 1] : cu_seqlens[i], cu_seqlens[i - 1] : cu_seqlens[i]] = True
+                q, k, v = q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1)
+                attn_output = F.scaled_dot_product_attention(q, k, v, attention_mask, dropout_p=0.0)
+                return self.proj(attn_output.transpose(0, 1).reshape(seq_length, -1))
+
+        VisionSdpaAttention.__module__ = module.__name__
+        sys.modules[module.__name__] = module
+        try:
+            torch.manual_seed(0)
+            attn = VisionSdpaAttention(dim=32, num_heads=4)
+            block = types.SimpleNamespace(attn=attn)
+            model = types.SimpleNamespace(vision_tower=types.SimpleNamespace(blocks=[block]))
+            hidden = torch.randn(12, 32)
+            for cu_seqlens in (torch.tensor([0, 12]), torch.tensor([0, 5, 12])):
+                with torch.no_grad():
+                    expected = attn(hidden, cu_seqlens)
+                _patch_vision_sdpa_attention(model, torch)
+                with torch.no_grad():
+                    actual = attn(hidden, cu_seqlens)
+                self.assertTrue(getattr(VisionSdpaAttention, "_pdf_layout_lab_sdpa_patch", False))
+                self.assertTrue(torch.allclose(expected, actual, atol=1e-5), f"cu_seqlens={cu_seqlens.tolist()}")
+        finally:
+            sys.modules.pop(module.__name__, None)

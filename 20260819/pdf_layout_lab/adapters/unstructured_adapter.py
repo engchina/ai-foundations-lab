@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pdf_layout_lab import model_pool
 from pdf_layout_lab.categories import normalize_category
 from pdf_layout_lab.coordinates import clamp_bbox
 from pdf_layout_lab.schemas import LayoutRecord
@@ -20,9 +21,26 @@ class UnstructuredAdapter:
             return AdapterAvailability(False, missing_dependency_message("Unstructured", extra_install_command("unstructured")))
         return AdapterAvailability(True, "high-res partition でレイアウト要素を抽出します。")
 
+    def preload(self) -> None:
+        """hi_res 用レイアウトモデルを事前にロードして常駐させる（UI の「ロード」ボタン用）。"""
+        self._register_model_cache()
+        from unstructured_inference.models.base import get_model
+
+        get_model()
+
+    def _register_model_cache(self) -> None:
+        # unstructured_inference はモデルを自前の dict に常駐させるので、解放時にその dict を空にする
+        def clear_cache() -> None:
+            from unstructured_inference.models import base
+
+            base.models.clear()
+
+        model_pool.get(self.engine_id, lambda: "unstructured_inference", unloader=clear_cache)
+
     def analyze(self, context: AnalysisContext) -> list[LayoutRecord]:
         from unstructured.partition.pdf import partition_pdf
 
+        self._register_model_cache()
         page_numbers = [page.page for page in context.pages]
         elements = partition_pdf(
             filename=str(context.pdf_path),

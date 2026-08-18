@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from pdf_layout_lab import model_pool
 from pdf_layout_lab.categories import normalize_category
 from pdf_layout_lab.coordinates import clamp_bbox
 from pdf_layout_lab.schemas import LayoutRecord
@@ -40,17 +41,28 @@ class YoloV10Adapter:
             return AdapterAvailability(False, f"YOLOv10_MODEL_PATH の重みが見つかりません: {self.settings.yolov10_model_path}")
         return AdapterAvailability(True, "DocLayNet fine-tuned YOLOv10 重みでレイアウト検出します。")
 
-    def analyze(self, context: AnalysisContext) -> list[LayoutRecord]:
-        yolo_config_dir = context.run_dir / "ultralytics"
-        matplotlib_config_dir = context.run_dir / "matplotlib"
+    def preload(self) -> None:
+        """モデルを事前にロードして常駐させる（UI の「ロード」ボタン用）。"""
+        self._model(self.settings.output_dir / "_cache" / "yolov10")
+
+    def _model(self, config_root: Path):
+        yolo_config_dir = config_root / "ultralytics"
+        matplotlib_config_dir = config_root / "matplotlib"
         yolo_config_dir.mkdir(parents=True, exist_ok=True)
         matplotlib_config_dir.mkdir(parents=True, exist_ok=True)
         os.environ.setdefault("YOLO_CONFIG_DIR", str(yolo_config_dir))
         os.environ.setdefault("MPLCONFIGDIR", str(matplotlib_config_dir))
+        model_path = str(Path(self.settings.yolov10_model_path).expanduser())
 
-        from ultralytics import YOLO
+        def load():
+            from ultralytics import YOLO
 
-        model = YOLO(str(Path(self.settings.yolov10_model_path).expanduser()))
+            return YOLO(model_path)
+
+        return model_pool.get(self.engine_id, load, signature=model_path)
+
+    def analyze(self, context: AnalysisContext) -> list[LayoutRecord]:
+        model = self._model(context.run_dir)
         records: list[LayoutRecord] = []
         for page in context.pages:
             results = model.predict(source=page.image_path, conf=max(context.min_confidence, 0.2), iou=0.8, verbose=False)

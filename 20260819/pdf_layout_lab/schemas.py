@@ -66,6 +66,7 @@ class AnalysisRun:
     json_path: str
     jsonl_path: str
     viewer_data_path: str
+    source_page_count: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +74,7 @@ class AnalysisRun:
             "pdf_name": self.pdf_name,
             "pdf_path": self.pdf_path,
             "pages": [asdict(page) for page in self.pages],
+            "source_page_count": self.source_page_count,
             "records": [record.to_dict() for record in self.records],
             "statuses": [status.to_dict() for status in self.statuses],
             "output_dir": self.output_dir,
@@ -93,6 +95,7 @@ class AnalysisRun:
             "run_id": self.run_id,
             "pdf_name": self.pdf_name,
             "pages": [asdict(page) for page in self.pages],
+            "source_page_count": self.source_page_count,
             "records": [record.to_dict() for record in self.records],
             "engines": engines,
             "category_styles": [asdict(style) for style in CATEGORY_STYLES],

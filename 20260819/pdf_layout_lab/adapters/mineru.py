@@ -122,7 +122,7 @@ def build_mineru_command(command: list[str], pdf_path: Path, output_dir: Path, s
 
 def _build_mineru_env(context: AnalysisContext) -> dict[str, str]:
     env = os.environ.copy()
-    cache_root = context.settings.output_dir / "_cache" / "mineru"
+    cache_root = (context.settings.output_dir / "_cache" / "mineru").resolve()
     cache_root.mkdir(parents=True, exist_ok=True)
     # MinerU と周辺ライブラリのキャッシュをプロジェクト配下へ寄せ、ホームディレクトリ権限に依存しないようにする。
     env.setdefault("XDG_CACHE_HOME", str(cache_root / "xdg"))

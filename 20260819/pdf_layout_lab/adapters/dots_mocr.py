@@ -16,6 +16,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from pdf_layout_lab import model_pool
 from pdf_layout_lab.categories import normalize_category
 from pdf_layout_lab.coordinates import clamp_bbox
 from pdf_layout_lab.prompts import PROMPT_LAYOUT_ALL_EN
@@ -27,7 +28,6 @@ from .base import AdapterAvailability, AnalysisContext, extra_install_command, h
 
 LOCAL_BACKENDS = {"transformers", "hf", "local", "local_hf"}
 API_BACKENDS = {"api", "vllm", "openai", "openai_api", "local_vllm"}
-_LOCAL_RUNTIME_CACHE: dict[tuple[str, str, str, str, str], "_LocalDotsMocrRuntime"] = {}
 _FLASH_ATTN_IMPORT_ERROR = (
     "DOTS_MOCR_ATTN_IMPLEMENTATION=flash_attention_2 には flash_attn が必要です。"
     "`pip install flash_attn` を実行するか、DOTS_MOCR_ATTN_IMPLEMENTATION=sdpa を指定してください。"
@@ -104,8 +104,14 @@ class DotsMocrAdapter:
                 )
         return records
 
+    def preload(self) -> None:
+        """モデルを事前にロードして常駐させる（UI の「ロード」ボタン用）。"""
+        if _normalize_backend(self.settings.dots_mocr_backend) in LOCAL_BACKENDS:
+            _prepare_runtime_env(self.settings)
+            _get_local_runtime(self.settings)
+
     def _call_transformers(self, image_path: Path, context: AnalysisContext) -> str:
-        _prepare_runtime_env(context)
+        _prepare_runtime_env(context.settings)
         runtime = _get_local_runtime(self.settings)
         return runtime.infer(image_path, PROMPT_LAYOUT_ALL_EN, self.settings.dots_mocr_max_new_tokens)
 
@@ -184,6 +190,7 @@ class _LocalDotsMocrRuntime:
         effective_dtype = dtype or _default_runtime_dtype(torch, self.device)
         _cast_floating_tensors_to_dtype(self.model, effective_dtype)
         _patch_vision_tower_forward(self.model, torch)
+        _patch_vision_sdpa_attention(self.model, torch)
         if not device_map:
             self.model.to(self.device)
         self.model.eval()
@@ -224,22 +231,22 @@ class _LocalDotsMocrRuntime:
 
 
 def _get_local_runtime(settings: Settings) -> _LocalDotsMocrRuntime:
-    key = (
+    signature = (
         settings.dots_mocr_model,
         settings.dots_mocr_device,
         settings.dots_mocr_device_map,
         settings.dots_mocr_torch_dtype,
         settings.dots_mocr_attn_implementation,
     )
-    runtime = _LOCAL_RUNTIME_CACHE.get(key)
-    if runtime is None:
-        runtime = _LocalDotsMocrRuntime(settings)
-        _LOCAL_RUNTIME_CACHE[key] = runtime
-    return runtime
+    return model_pool.get(
+        DotsMocrAdapter.engine_id,
+        lambda: _LocalDotsMocrRuntime(settings),
+        signature=signature,
+    )
 
 
-def _prepare_runtime_env(context: AnalysisContext) -> None:
-    cache_root = context.settings.output_dir / "_cache" / "dots_mocr"
+def _prepare_runtime_env(settings: Settings) -> None:
+    cache_root = (settings.output_dir / "_cache" / "dots_mocr").resolve()
     cache_root.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("XDG_CACHE_HOME", str(cache_root / "xdg"))
     os.environ.setdefault("HF_HOME", str(cache_root / "huggingface"))
@@ -442,6 +449,48 @@ def _patch_vision_tower_forward(model: Any, torch: Any) -> None:
     setattr(vision_tower, "_pdf_layout_lab_original_forward", original_forward)
     setattr(vision_tower, "_pdf_layout_lab_dtype_patch", True)
     setattr(vision_tower, "forward", patched_forward)
+
+
+def _patch_vision_sdpa_attention(model: Any, torch: Any) -> None:
+    """dots.mocr の SDPA 版 vision attention を、メモリ効率の良いカーネルが選ばれる形に差し替える。
+
+    元実装は q/k/v を 3 次元 [heads, N, dim] で渡し、さらに [1, N, N] の bool マスクを付ける。
+    この組み合わせでは PyTorch の flash / efficient カーネルが使えず math 実装へフォールバックし、
+    N×N の行列を実体化する（300 DPI の A4 ページで N≈44,000 → 約 90 GiB を要求して OOM になる）。
+    4 次元に整形し、画像が 1 枚だけのとき（cu_seqlens が 1 区間）はマスクを付けないことで、
+    メモリ使用量を O(N) に抑える。flash_attn がインストール済みの環境ではそもそも呼ばれない。
+    """
+    vision_tower = getattr(model, "vision_tower", None)
+    blocks = getattr(vision_tower, "blocks", None)
+    if not blocks:
+        return
+    attn_cls = type(getattr(blocks[0], "attn", None))
+    if attn_cls.__name__ != "VisionSdpaAttention" or getattr(attn_cls, "_pdf_layout_lab_sdpa_patch", False):
+        return
+    apply_rotary_pos_emb_vision = getattr(sys.modules.get(attn_cls.__module__), "apply_rotary_pos_emb_vision", None)
+    if apply_rotary_pos_emb_vision is None:
+        return
+    F = torch.nn.functional
+
+    def forward(self, hidden_states, cu_seqlens, rotary_pos_emb=None):
+        seq_length = hidden_states.shape[0]
+        q, k, v = self.qkv(hidden_states).reshape(seq_length, 3, self.num_heads, -1).permute(1, 0, 2, 3).unbind(0)
+        q = apply_rotary_pos_emb_vision(q.unsqueeze(0), rotary_pos_emb).squeeze(0)
+        k = apply_rotary_pos_emb_vision(k.unsqueeze(0), rotary_pos_emb).squeeze(0)
+        # [N, heads, dim] → [1, heads, N, dim]
+        q, k, v = (tensor.transpose(0, 1).unsqueeze(0) for tensor in (q, k, v))
+        attention_mask = None
+        if len(cu_seqlens) > 2:  # 複数画像のときだけブロック対角マスクが必要
+            attention_mask = torch.zeros([1, 1, seq_length, seq_length], device=q.device, dtype=torch.bool)
+            for i in range(1, len(cu_seqlens)):
+                attention_mask[..., cu_seqlens[i - 1] : cu_seqlens[i], cu_seqlens[i - 1] : cu_seqlens[i]] = True
+        attn_output = F.scaled_dot_product_attention(q, k, v, attention_mask, dropout_p=0.0)
+        attn_output = attn_output.squeeze(0).transpose(0, 1).reshape(seq_length, -1)
+        return self.proj(attn_output)
+
+    attn_cls._pdf_layout_lab_original_forward = attn_cls.forward
+    attn_cls.forward = forward
+    attn_cls._pdf_layout_lab_sdpa_patch = True
 
 
 def extract_first_json(text: str) -> Any:
