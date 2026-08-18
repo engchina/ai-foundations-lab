@@ -411,3 +411,23 @@ class DotsMocrPictureOcrTests(unittest.TestCase):
         self.assertEqual(filled.text, "既にテキストがある")
         self.assertEqual(len(prompts), 1)
         self.assertIn("Layout Categories", prompts[0])
+
+
+class DotsMocrPictureResponseTests(unittest.TestCase):
+    def test_layout_json_without_text_stays_empty(self):
+        from pdf_layout_lab.adapters.dots_mocr import _texts_from_layout_response
+
+        # 写真やロゴのように文字が無い画像。生の JSON をセルへ出さない。
+        response = '[{"bbox": [0, 0, 100, 100], "category": "Picture"}]'
+        self.assertEqual(_texts_from_layout_response(response), "")
+
+    def test_non_json_response_is_used_as_text(self):
+        from pdf_layout_lab.adapters.dots_mocr import _texts_from_layout_response
+
+        self.assertEqual(_texts_from_layout_response("  図中の文字  "), "図中の文字")
+
+    def test_table_image_keeps_html(self):
+        from pdf_layout_lab.adapters.dots_mocr import _texts_from_layout_response
+
+        response = '[{"bbox": [0, 0, 10, 10], "category": "Table", "text": "<table><tr><td>A</td></tr></table>"}]'
+        self.assertTrue(_texts_from_layout_response(response).startswith("<table>"))

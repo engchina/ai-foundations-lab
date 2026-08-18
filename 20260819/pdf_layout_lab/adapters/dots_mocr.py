@@ -53,10 +53,18 @@ def _save_picture_crop(page_picture, record: LayoutRecord, crop_dir: Path) -> Pa
 
 
 def _texts_from_layout_response(response_text: str) -> str:
-    elements = coerce_layout_elements(extract_first_json(response_text))
+    """切り出し画像の再解析結果から本文だけを取り出す。
+
+    写真・ロゴ・装飾のように文字が無い画像では空文字を返し、Picture を空のままにする。
+    """
+    try:
+        payload = extract_first_json(response_text)
+    except ValueError:
+        # JSON にならない応答はそのまま本文として扱う
+        return response_text.strip()
+    elements = coerce_layout_elements(payload)
     texts = [str(element.get("text") or element.get("content") or "").strip() for element in elements]
-    joined = "\n".join(text for text in texts if text)
-    return joined or response_text.strip()
+    return "\n".join(text for text in texts if text)
 
 
 class DotsMocrAdapter:
