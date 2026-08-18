@@ -52,7 +52,6 @@ input:focus-visible {
   padding: 14px 18px;
 }
 
-.jsonl-header,
 .jsonl-controls,
 .engine-strip,
 .engine-message {
@@ -61,25 +60,9 @@ input:focus-visible {
   background: var(--panel);
 }
 
-.jsonl-header {
-  display: flex;
-  align-items: center;
+.jsonl-table-tools {
   justify-content: flex-end;
-  gap: 16px;
-  margin-bottom: 12px;
-  padding: 12px 14px;
-}
-
-.jsonl-header p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.jsonl-header h1 {
-  margin: 3px 0 0;
-  font-size: 20px;
-  line-height: 1.25;
+  padding: 8px;
 }
 
 .download-actions {
@@ -240,6 +223,37 @@ input:focus-visible {
   justify-content: center;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.html-table-preview {
+  overflow-x: auto;
+  margin-bottom: 6px;
+}
+
+.html-table-preview table {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.html-table-preview th,
+.html-table-preview td {
+  border: 1px solid var(--border);
+  padding: 3px 6px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.html-table-preview th {
+  background: #f8fafc;
+}
+
+.link-button {
+  border: none;
+  background: none;
+  padding: 0;
+  color: var(--blue);
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .selected-highlight {

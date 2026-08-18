@@ -70,6 +70,36 @@ function normalizeRotation(rotation: number): number {
   return normalized < 0 ? normalized + 360 : normalized;
 }
 
+const HTML_TABLE_TAGS = new Set(["TABLE", "THEAD", "TBODY", "TFOOT", "TR", "TD", "TH", "BR", "B", "I", "SPAN", "P"]);
+
+function isHtmlTable(text: string): boolean {
+  return /^\s*<table[\s>]/i.test(text || "");
+}
+
+function renderHtmlTable(html: string): React.ReactNode {
+  const table = new DOMParser().parseFromString(html, "text/html").body.querySelector("table");
+  if (!table) return null;
+
+  let key = 0;
+  const toElement = (node: Node): React.ReactNode => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent;
+    if (node.nodeType !== Node.ELEMENT_NODE) return null;
+    const element = node as HTMLElement;
+    if (!HTML_TABLE_TAGS.has(element.tagName)) return null;
+
+    const tag = element.tagName.toLowerCase();
+    const props: Record<string, unknown> = { key: `html-${key++}` };
+    const rowSpan = Number(element.getAttribute("rowspan"));
+    const colSpan = Number(element.getAttribute("colspan"));
+    if (rowSpan > 1) props.rowSpan = rowSpan;
+    if (colSpan > 1) props.colSpan = colSpan;
+    if (tag === "br") return React.createElement(tag, props);
+    return React.createElement(tag, props, Array.from(element.childNodes).map(toElement));
+  };
+
+  return toElement(table);
+}
+
 function formatEngineLabel(engine: EngineStatus): string {
   const state = engine.available ? "有効" : "無効";
   return `${engine.label}: ${state} / ${engine.count} 件`;
@@ -120,10 +150,6 @@ function App() {
   const selectedRecord = React.useMemo(
     () => data?.records.find((record) => record.id === selectedId) ?? null,
     [data, selectedId],
-  );
-  const currentEngine = React.useMemo(
-    () => data?.engines.find((engine) => engine.engine === selectedEngine) ?? null,
-    [data, selectedEngine],
   );
   const pageRecords = React.useMemo(() => {
     if (!data) return [];
@@ -194,21 +220,6 @@ function App() {
 
   return (
     <main className="jsonl-shell">
-      {!isPreviewOnly && (
-        <header className="jsonl-header">
-          <nav className="download-actions" aria-label="ダウンロード">
-            <a href={`/artifacts/${data.run_id}/results.json`} download>
-              <Download aria-hidden="true" />
-              JSON
-            </a>
-            <a href={`/artifacts/${data.run_id}/results.jsonl`} download>
-              <Download aria-hidden="true" />
-              JSONL
-            </a>
-          </nav>
-        </header>
-      )}
-
       <section className="jsonl-controls" aria-label="ページ操作">
         <button
           type="button"
@@ -255,12 +266,6 @@ function App() {
         </section>
       )}
 
-      {!isPreviewOnly && currentEngine && (
-        <p className={currentEngine.available ? "engine-message" : "engine-message warning-message"}>
-          {currentEngine.label}: {currentEngine.message}
-        </p>
-      )}
-
       <section
         className={isPreviewOnly ? "split-viewer preview-only" : "split-viewer"}
         aria-label={isPreviewOnly ? "ファイルプレビュー" : "ファイルと JSONL"}
@@ -279,6 +284,7 @@ function App() {
         />
         {!isPreviewOnly && (
           <JSONLTable
+            runId={data.run_id}
             records={pageRecords}
             selectedId={selectedId}
             onSelect={selectRecord}
@@ -375,15 +381,27 @@ function PDFPane(props: {
 }
 
 function JSONLTable(props: {
+  runId: string;
   records: LayoutRecord[];
   selectedId: string;
   onSelect: (record: LayoutRecord) => void;
   scrollRef: React.RefObject<HTMLDivElement>;
 }) {
-  const { records, selectedId, onSelect, scrollRef } = props;
+  const { runId, records, selectedId, onSelect, scrollRef } = props;
+  const [rawIds, setRawIds] = React.useState<Record<string, boolean>>({});
 
   return (
     <div className="jsonl-table-pane" ref={scrollRef}>
+      <nav className="download-actions jsonl-table-tools" aria-label="ダウンロード">
+        <a href={`/artifacts/${runId}/results.json`} download>
+          <Download aria-hidden="true" />
+          JSON
+        </a>
+        <a href={`/artifacts/${runId}/results.jsonl`} download>
+          <Download aria-hidden="true" />
+          JSONL
+        </a>
+      </nav>
       <table className="jsonl-table">
         <thead>
           <tr>
@@ -409,7 +427,25 @@ function JSONLTable(props: {
               >
                 <td>{record.page}</td>
                 <td>{record.seq_no}</td>
-                <td className="sentence-cell">{trimText(record.text || record.raw_type || "")}</td>
+                <td className="sentence-cell">
+                  {isHtmlTable(record.text) && !rawIds[record.id] ? (
+                    <div className="html-table-preview">{renderHtmlTable(record.text)}</div>
+                  ) : (
+                    trimText(record.text || record.raw_type || "")
+                  )}
+                  {isHtmlTable(record.text) && (
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setRawIds((prev) => ({ ...prev, [record.id]: !prev[record.id] }));
+                      }}
+                    >
+                      {rawIds[record.id] ? "表として表示" : "HTML を表示"}
+                    </button>
+                  )}
+                </td>
                 <td>{record.category}</td>
               </tr>
             ))
