@@ -366,7 +366,21 @@ def _extract_block_text(block: dict[str, Any]) -> str:
     text = _text_from_lines(block.get("lines"))
     if text:
         return text
+    # 表などは中身が入れ子の blocks 側にあり、外側の block には text も lines も無い
+    text = _text_from_blocks(block.get("blocks"))
+    if text:
+        return text
     return _text_from_value([block.get("image_caption"), block.get("image_footnote")])
+
+
+def _text_from_blocks(blocks: Any) -> str:
+    if not isinstance(blocks, list):
+        return ""
+    parts = [_extract_block_text(block) for block in blocks if isinstance(block, dict)]
+    parts = [part for part in parts if part]
+    # ビューアは <table> で始まる文字列だけを表として描画するため、表本体を先頭に置く
+    parts.sort(key=lambda part: not part.lstrip().lower().startswith("<table"))
+    return "\n".join(parts)
 
 
 def _text_from_lines(lines: Any) -> str:

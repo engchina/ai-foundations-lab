@@ -136,3 +136,40 @@ class MineruAdapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MineruTableTextTests(unittest.TestCase):
+    def test_table_block_uses_nested_table_html(self):
+        page = PageImage(page=1, width=2480, height=3500, pdf_width=595.0, pdf_height=841.0, image_path="page.png")
+        payload = {
+            "pdf_info": [
+                {
+                    "page_idx": 0,
+                    "page_size": [595.0, 841.0],
+                    "preproc_blocks": [
+                        {
+                            "type": "table",
+                            "bbox": [88, 472, 496, 750],
+                            "blocks": [
+                                {
+                                    "type": "table_caption",
+                                    "bbox": [88, 472, 496, 490],
+                                    "lines": [{"spans": [{"type": "text", "content": "表 2"}]}],
+                                },
+                                {
+                                    "type": "table_body",
+                                    "bbox": [88, 492, 496, 750],
+                                    "lines": [{"spans": [{"type": "table", "html": "<table><tr><td>A</td></tr></table>"}]}],
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        records = _records_from_dict_payload(payload, {1: page}, "mineru", 0.0)
+
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0].text.startswith("<table>"))
+        self.assertIn("表 2", records[0].text)
