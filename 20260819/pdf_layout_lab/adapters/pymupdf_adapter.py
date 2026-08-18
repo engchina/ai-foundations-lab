@@ -32,7 +32,9 @@ class PyMuPdfAdapter:
             for page_number in sorted(page_lookup):
                 page_info = page_lookup[page_number]
                 page = doc.load_page(page_number - 1)
-                blocks = page.get_text("blocks", sort=True)
+                # 既定の flags は画像ブロックを落とすため、スキャン PDF が 0 件になる
+                flags = fitz.TEXTFLAGS_BLOCKS | fitz.TEXT_PRESERVE_IMAGES
+                blocks = page.get_text("blocks", sort=True, flags=flags)
                 for block_index, block in enumerate(blocks, start=1):
                     x1, y1, x2, y2 = block[:4]
                     text = str(block[4] or "").strip()

@@ -50,3 +50,41 @@ class SourceRenderingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PyMuPdfAdapterTests(unittest.TestCase):
+    def _scanned_pdf(self, directory: Path) -> Path:
+        """1 ページ全面が 1 枚の画像だけ（テキスト無し）のスキャン PDF を作る。"""
+        import pymupdf
+
+        image_path = directory / "scan.png"
+        Image.new("RGB", (600, 800), (230, 230, 230)).save(image_path)
+        pdf_path = directory / "scanned.pdf"
+        with pymupdf.open() as doc:
+            page = doc.new_page(width=595, height=842)
+            page.insert_image(pymupdf.Rect(0, 0, 595, 842), filename=str(image_path))
+            doc.save(str(pdf_path))
+        return pdf_path
+
+    def test_image_only_page_returns_picture_record(self):
+        from pdf_layout_lab.adapters.base import AnalysisContext
+        from pdf_layout_lab.adapters.pymupdf_adapter import PyMuPdfAdapter
+        from pdf_layout_lab.schemas import PageImage
+        from pdf_layout_lab.settings import get_settings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            pdf_path = self._scanned_pdf(directory)
+            page = PageImage(page=1, width=1190, height=1684, pdf_width=595, pdf_height=842, image_path="page.png")
+            settings = get_settings()
+            records = PyMuPdfAdapter(settings).analyze(
+                AnalysisContext(
+                    pdf_path=pdf_path,
+                    run_dir=directory,
+                    pages=[page],
+                    settings=settings,
+                    min_confidence=0.5,
+                )
+            )
+
+        self.assertEqual([record.category for record in records], ["Picture"])
