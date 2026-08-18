@@ -7,7 +7,7 @@ from typing import Any, TypeVar
 
 from . import model_pool
 from .adapters import ENGINE_LABELS, ENGINE_ORDER, build_adapters
-from .analysis import analyze_pdf, preview_pdf, summarize_preview, summarize_run
+from .analysis import analyze_pdf, preview_pdf
 from .bootstrap import exec_project_venv_if_available
 from .rendering import SUPPORTED_SOURCE_FILE_TYPES, get_pdf_page_count, render_pdf_pages
 from .settings import get_settings
@@ -261,7 +261,6 @@ def build_gradio_blocks(viewer_ready: bool):
                         value=default_choices,
                     )
                     run_button = gr.Button("解析を実行", variant="primary")
-                    summary = gr.Markdown("")
             page_range = gr.Textbox(value="1", visible=False)
             with gr.Accordion("モデルの常駐管理（GPU / メモリ）", open=False):
                 gr.Markdown(
@@ -282,64 +281,62 @@ def build_gradio_blocks(viewer_ready: bool):
                     unload_all_button = gr.Button("すべて解放", variant="stop")
                 model_status = gr.Markdown(model_status_markdown())
                 status_timer = gr.Timer(5)
-            with gr.Row(elem_classes=["settings-row"]):
-                with gr.Column(scale=2, min_width=360, elem_classes=["setting-card"]):
-                    gr.Markdown(
-                        """
-                        **信頼度の下限**: 各解析エンジンがファイル上で見つけたテキスト行、表、図、タイトルなどのレイアウト要素に付ける確信度です。0〜1 で表し、下限を上げると誤検出は減りますが、小さな文字や薄い罫線の検出漏れが増える場合があります。
-                        """,
-                        elem_classes=["setting-help"],
-                    )
-                    min_confidence_preset = gr.Radio(
-                        label="よく使われる信頼度",
-                        choices=_preset_labels(CONFIDENCE_PRESETS),
-                        value=_preset_label_for_value(CONFIDENCE_PRESETS, DEFAULT_MIN_CONFIDENCE),
-                        elem_classes=["preset-radio"],
-                    )
-                    min_confidence = gr.Slider(
-                        label="信頼度の下限（細かく調整）",
-                        minimum=0,
-                        maximum=1,
-                        step=0.05,
-                        value=DEFAULT_MIN_CONFIDENCE,
-                    )
-                with gr.Column(scale=2, min_width=360, elem_classes=["setting-card"]):
-                    gr.Markdown(
-                        """
-                        **ページ画像 DPI**: PDF ページを画像化するときの解像度です。画像アップロード時は元画像の解像度を使います。
-                        """,
-                        elem_classes=["setting-help"],
-                    )
-                    dpi_preset = gr.Radio(
-                        label="よく使われる DPI",
-                        choices=_preset_labels(DPI_PRESETS),
-                        value=default_dpi_preset,
-                        elem_classes=["preset-radio"],
-                    )
-                    dpi = gr.Slider(
-                        label="ページ画像 DPI（細かく調整）",
-                        minimum=72,
-                        maximum=300,
-                        step=1,
-                        value=default_dpi,
-                    )
+            with gr.Accordion("詳細設定（信頼度の下限 / ページ画像 DPI）", open=False):
+                with gr.Row(elem_classes=["settings-row"]):
+                    with gr.Column(scale=2, min_width=360, elem_classes=["setting-card"]):
+                        gr.Markdown(
+                            """
+                            **信頼度の下限**: 各解析エンジンがファイル上で見つけたテキスト行、表、図、タイトルなどのレイアウト要素に付ける確信度です。0〜1 で表し、下限を上げると誤検出は減りますが、小さな文字や薄い罫線の検出漏れが増える場合があります。
+                            """,
+                            elem_classes=["setting-help"],
+                        )
+                        min_confidence_preset = gr.Radio(
+                            label="よく使われる信頼度",
+                            choices=_preset_labels(CONFIDENCE_PRESETS),
+                            value=_preset_label_for_value(CONFIDENCE_PRESETS, DEFAULT_MIN_CONFIDENCE),
+                            elem_classes=["preset-radio"],
+                        )
+                        min_confidence = gr.Slider(
+                            label="信頼度の下限（細かく調整）",
+                            minimum=0,
+                            maximum=1,
+                            step=0.05,
+                            value=DEFAULT_MIN_CONFIDENCE,
+                        )
+                    with gr.Column(scale=2, min_width=360, elem_classes=["setting-card"]):
+                        gr.Markdown(
+                            """
+                            **ページ画像 DPI**: PDF ページを画像化するときの解像度です。画像アップロード時は元画像の解像度を使います。
+                            """,
+                            elem_classes=["setting-help"],
+                        )
+                        dpi_preset = gr.Radio(
+                            label="よく使われる DPI",
+                            choices=_preset_labels(DPI_PRESETS),
+                            value=default_dpi_preset,
+                            elem_classes=["preset-radio"],
+                        )
+                        dpi = gr.Slider(
+                            label="ページ画像 DPI（細かく調整）",
+                            minimum=72,
+                            maximum=300,
+                            step=1,
+                            value=default_dpi,
+                        )
             viewer = gr.HTML(_preview_placeholder_html())
 
         def preview(pdf_file_value, dpi_value):
             if not pdf_file_value:
-                return _preview_placeholder_html(), ""
+                return _preview_placeholder_html()
             try:
                 run_result = preview_pdf(
                     pdf_path=_file_path(pdf_file_value),
                     settings=get_settings(),
                     dpi=int(dpi_value or settings.render_dpi),
                 )
-                return (
-                    _viewer_frame(run_result.run_id, viewer_ready),
-                    summarize_preview(run_result),
-                )
+                return _viewer_frame(run_result.run_id, viewer_ready)
             except Exception as exc:
-                return _error_html(str(exc)), f"### プレビューできませんでした\n\n{exc}"
+                return _error_html(str(exc))
 
         def run(pdf_file_value, page_range_value, selected_labels, confidence_value, dpi_value):
             try:
@@ -356,11 +353,10 @@ def build_gradio_blocks(viewer_ready: bool):
                 )
                 return (
                     _viewer_frame(run_result.run_id, viewer_ready),
-                    summarize_run(run_result),
                     model_status_markdown(),
                 )
             except Exception as exc:
-                return _error_html(str(exc)), f"### 解析できませんでした\n\n{exc}", model_status_markdown()
+                return _error_html(str(exc)), model_status_markdown()
 
         def select_confidence_preset(label):
             return _preset_value_for_label(CONFIDENCE_PRESETS, label, DEFAULT_MIN_CONFIDENCE)
@@ -397,12 +393,12 @@ def build_gradio_blocks(viewer_ready: bool):
         pdf_file.change(
             fn=preview,
             inputs=[pdf_file, dpi],
-            outputs=[viewer, summary],
+            outputs=viewer,
         )
         run_button.click(
             fn=run,
             inputs=[pdf_file, page_range, engines, min_confidence, dpi],
-            outputs=[viewer, summary, model_status],
+            outputs=[viewer, model_status],
             js=RUN_PAGE_SELECTION_JS,
         )
         load_button.click(fn=load_engine_model, inputs=model_engine, outputs=model_status)
