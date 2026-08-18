@@ -434,16 +434,30 @@ function JSONLTable(props: {
                     trimText(record.text || record.raw_type || "")
                   )}
                   {isHtmlTable(record.text) && (
-                    <button
-                      type="button"
-                      className="link-button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setRawIds((prev) => ({ ...prev, [record.id]: !prev[record.id] }));
-                      }}
-                    >
-                      {rawIds[record.id] ? "表として表示" : "HTML を表示"}
-                    </button>
+                    <div className="cell-tools">
+                      <button
+                        type="button"
+                        className="link-button"
+                        disabled={!rawIds[record.id]}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setRawIds((prev) => ({ ...prev, [record.id]: false }));
+                        }}
+                      >
+                        テーブルを表示
+                      </button>
+                      <button
+                        type="button"
+                        className="link-button"
+                        disabled={!!rawIds[record.id]}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setRawIds((prev) => ({ ...prev, [record.id]: true }));
+                        }}
+                      >
+                        HTML を表示
+                      </button>
+                    </div>
                   )}
                 </td>
                 <td>{record.category}</td>

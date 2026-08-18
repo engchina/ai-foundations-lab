@@ -247,6 +247,13 @@ input:focus-visible {
   background: #f8fafc;
 }
 
+/* 元の内容の次の行に、表示切り替えの 2 リンクを並べる */
+.cell-tools {
+  display: flex;
+  gap: 12px;
+  margin-top: 6px;
+}
+
 .link-button {
   border: none;
   background: none;
@@ -254,6 +261,12 @@ input:focus-visible {
   color: var(--blue);
   font-size: 12px;
   cursor: pointer;
+}
+
+.link-button:disabled {
+  color: var(--muted);
+  cursor: default;
+  font-weight: 600;
 }
 
 .selected-highlight {
