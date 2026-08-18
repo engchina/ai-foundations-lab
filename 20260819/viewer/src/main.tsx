@@ -194,12 +194,8 @@ function App() {
 
   return (
     <main className="jsonl-shell">
-      <header className="jsonl-header">
-        <div>
-          <p>Run ID: {data.run_id}</p>
-          <h1>{data.pdf_name}</h1>
-        </div>
-        {!isPreviewOnly && (
+      {!isPreviewOnly && (
+        <header className="jsonl-header">
           <nav className="download-actions" aria-label="ダウンロード">
             <a href={`/artifacts/${data.run_id}/results.json`} download>
               <Download aria-hidden="true" />
@@ -210,8 +206,8 @@ function App() {
               JSONL
             </a>
           </nav>
-        )}
-      </header>
+        </header>
+      )}
 
       <section className="jsonl-controls" aria-label="ページ操作">
         <button
@@ -233,14 +229,6 @@ function App() {
           />
           <span>/ {sourcePageCount}</span>
         </div>
-        <div className="page-tools">
-          <button type="button" aria-label="左に回転" title="左に回転" onClick={() => rotatePage(-90)}>
-            <RotateCcw aria-hidden="true" />
-          </button>
-          <button type="button" aria-label="右に回転" title="右に回転" onClick={() => rotatePage(90)}>
-            <RotateCw aria-hidden="true" />
-          </button>
-        </div>
         <button
           type="button"
           aria-label="次のページ"
@@ -251,11 +239,7 @@ function App() {
         </button>
       </section>
 
-      {isPreviewOnly ? (
-        <p className="engine-message">
-          解析前プレビューです。アップロードしたファイルの全 {data.pages.length} ページを表示できます。
-        </p>
-      ) : (
+      {!isPreviewOnly && (
         <section className="engine-strip" aria-label="解析エンジン">
           {data.engines.map((engine) => (
             <button
@@ -284,6 +268,7 @@ function App() {
         <PDFPane
           page={page ?? { page: pageNumber, width: 0, height: 0, image_url: `/page-image/${data.run_id}/${pageNumber}.png` }}
           rotation={rotation}
+          onRotate={rotatePage}
           note={
             page
               ? undefined
@@ -308,11 +293,12 @@ function App() {
 function PDFPane(props: {
   page: PageImage;
   rotation: number;
+  onRotate: (delta: number) => void;
   note?: string;
   selectedRecord: LayoutRecord | null;
   onClear: () => void;
 }) {
-  const { page, rotation, note, selectedRecord, onClear } = props;
+  const { page, rotation, onRotate, note, selectedRecord, onClear } = props;
   const paneRef = React.useRef<HTMLDivElement>(null);
   const highlightRef = React.useRef<HTMLDivElement>(null);
   // 未解析ページのプレビューは寸法を持たないので、画像の読み込み時に実寸を測る
@@ -339,6 +325,14 @@ function PDFPane(props: {
 
   return (
     <div className="pdf-pane" ref={paneRef} onClick={onClear}>
+      <div className="pdf-tools" onClick={(event) => event.stopPropagation()}>
+        <button type="button" aria-label="左に回転" title="左に回転" onClick={() => onRotate(-90)}>
+          <RotateCcw aria-hidden="true" />
+        </button>
+        <button type="button" aria-label="右に回転" title="右に回転" onClick={() => onRotate(90)}>
+          <RotateCw aria-hidden="true" />
+        </button>
+      </div>
       {note && <p className="preview-note">{note}</p>}
       <div
         className="pdf-page-frame"

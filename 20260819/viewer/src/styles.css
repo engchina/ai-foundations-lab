@@ -64,7 +64,7 @@ input:focus-visible {
 .jsonl-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 16px;
   margin-bottom: 12px;
   padding: 12px 14px;
@@ -90,7 +90,8 @@ input:focus-visible {
 
 .download-actions a,
 .jsonl-controls button,
-.engine-strip button {
+.engine-strip button,
+.pdf-tools button {
   min-height: 36px;
   display: inline-flex;
   align-items: center;
@@ -106,13 +107,15 @@ input:focus-visible {
 
 .download-actions a:hover,
 .jsonl-controls button:hover:not(:disabled),
-.engine-strip button:hover {
+.engine-strip button:hover,
+.pdf-tools button:hover {
   border-color: var(--border-strong);
   background: #f8fafc;
 }
 
 .download-actions svg,
 .jsonl-controls svg,
+.pdf-tools svg,
 .center-state svg {
   width: 16px;
   height: 16px;
@@ -228,9 +231,15 @@ input:focus-visible {
   font-size: 13px;
 }
 
-.page-tools {
-  display: inline-flex;
+/* ページ画像の上部中央に置き、スクロールしても押せるように固定する */
+.pdf-tools {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  justify-content: center;
   gap: 8px;
+  margin-bottom: 12px;
 }
 
 .selected-highlight {
