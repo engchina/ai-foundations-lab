@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { ChevronLeft, ChevronRight, Download, RefreshCw } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, RefreshCw, RotateCcw, RotateCw } from "lucide-react";
 import "./styles.css";
 
 type PageImage = {
@@ -65,6 +65,11 @@ function notifySelectedPage(page: string, runId: string | null) {
   );
 }
 
+function normalizeRotation(rotation: number): number {
+  const normalized = rotation % 360;
+  return normalized < 0 ? normalized + 360 : normalized;
+}
+
 function formatEngineLabel(engine: EngineStatus): string {
   const state = engine.available ? "有効" : "無効";
   return `${engine.label}: ${state} / ${engine.count} 件`;
@@ -79,6 +84,7 @@ function App() {
   const [selectedEngine, setSelectedEngine] = React.useState<string>("");
   const [selectedId, setSelectedId] = React.useState<string>("");
   const [goToPage, setGoToPage] = React.useState<string>("");
+  const [rotations, setRotations] = React.useState<Record<number, number>>({});
   const tableRef = React.useRef<HTMLDivElement>(null);
 
   React.useEffect(() => {
@@ -100,6 +106,7 @@ function App() {
           payload.engines[0]?.engine ??
           "";
         setData(payload);
+        setRotations({});
         setPageNumber(firstPage);
         setSelectedEngine(firstEngine);
         setGoToPage(String(firstPage));
@@ -143,6 +150,10 @@ function App() {
     setGoToPage(String(nextPage));
   }
 
+  function rotatePage(delta: number) {
+    setRotations((prev) => ({ ...prev, [pageNumber]: normalizeRotation((prev[pageNumber] ?? 0) + delta) }));
+  }
+
   function changeEngine(engineId: string) {
     setSelectedEngine(engineId);
     setSelectedId("");
@@ -179,6 +190,7 @@ function App() {
   }
 
   const isPreviewOnly = data.engines.length === 0;
+  const rotation = normalizeRotation(rotations[pageNumber] ?? 0);
 
   return (
     <main className="jsonl-shell">
@@ -221,6 +233,14 @@ function App() {
           />
           <span>/ {sourcePageCount}</span>
         </div>
+        <div className="page-tools">
+          <button type="button" aria-label="左に回転" title="左に回転" onClick={() => rotatePage(-90)}>
+            <RotateCcw aria-hidden="true" />
+          </button>
+          <button type="button" aria-label="右に回転" title="右に回転" onClick={() => rotatePage(90)}>
+            <RotateCw aria-hidden="true" />
+          </button>
+        </div>
         <button
           type="button"
           aria-label="次のページ"
@@ -261,22 +281,17 @@ function App() {
         className={isPreviewOnly ? "split-viewer preview-only" : "split-viewer"}
         aria-label={isPreviewOnly ? "ファイルプレビュー" : "ファイルと JSONL"}
       >
-        {page ? (
-          <PDFPane page={page} selectedRecord={selectedRecord} onClear={() => setSelectedId("")} />
-        ) : (
-          <div className="pdf-pane">
-            <p className="engine-message">
-              {pageNumber} ページ目はこの解析に含まれていません。プレビュー表示です。このまま「解析を実行」すると、このページを解析します。
-            </p>
-            <div className="pdf-page-wrap">
-              <img
-                src={`/page-image/${data.run_id}/${pageNumber}.png`}
-                alt={`${pageNumber} ページ目`}
-                draggable={false}
-              />
-            </div>
-          </div>
-        )}
+        <PDFPane
+          page={page ?? { page: pageNumber, width: 0, height: 0, image_url: `/page-image/${data.run_id}/${pageNumber}.png` }}
+          rotation={rotation}
+          note={
+            page
+              ? undefined
+              : `${pageNumber} ページ目はこの解析に含まれていません。プレビュー表示です。このまま「解析を実行」すると、このページを解析します。`
+          }
+          selectedRecord={selectedRecord}
+          onClear={() => setSelectedId("")}
+        />
         {!isPreviewOnly && (
           <JSONLTable
             records={pageRecords}
@@ -290,12 +305,24 @@ function App() {
   );
 }
 
-function PDFPane(props: { page: PageImage; selectedRecord: LayoutRecord | null; onClear: () => void }) {
-  const { page, selectedRecord, onClear } = props;
+function PDFPane(props: {
+  page: PageImage;
+  rotation: number;
+  note?: string;
+  selectedRecord: LayoutRecord | null;
+  onClear: () => void;
+}) {
+  const { page, rotation, note, selectedRecord, onClear } = props;
   const paneRef = React.useRef<HTMLDivElement>(null);
   const highlightRef = React.useRef<HTMLDivElement>(null);
+  // 未解析ページのプレビューは寸法を持たないので、画像の読み込み時に実寸を測る
+  const [measured, setMeasured] = React.useState<{ width: number; height: number } | null>(null);
+  const width = page.width || measured?.width || 0;
+  const height = page.height || measured?.height || 0;
+  const aspectRatio = width && height ? width / height : 1;
+  const isQuarterTurn = rotation % 180 !== 0;
   const highlight =
-    selectedRecord && selectedRecord.page === page.page ? getImageBoxStyle(selectedRecord, page) : null;
+    selectedRecord && selectedRecord.page === page.page && page.width ? getImageBoxStyle(selectedRecord, page) : null;
 
   React.useEffect(() => {
     if (!selectedRecord || selectedRecord.page !== page.page || !paneRef.current) return;
@@ -312,16 +339,42 @@ function PDFPane(props: { page: PageImage; selectedRecord: LayoutRecord | null; 
 
   return (
     <div className="pdf-pane" ref={paneRef} onClick={onClear}>
-      <div className="pdf-page-wrap" style={{ width: `${page.width}px`, maxWidth: "100%" }}>
-        <img src={page.image_url} alt={`${page.page} ページ目`} draggable={false} />
-        {highlight && (
-          <div
-            ref={highlightRef}
-            className="selected-highlight"
-            style={highlight}
-            title={`${selectedRecord?.seq_no ?? ""} ${selectedRecord?.category ?? ""}`}
+      {note && <p className="preview-note">{note}</p>}
+      <div
+        className="pdf-page-frame"
+        style={{
+          width: width ? `${width}px` : "100%",
+          maxWidth: "100%",
+          aspectRatio: `${isQuarterTurn ? 1 / aspectRatio : aspectRatio}`,
+        }}
+      >
+        <div
+          className="pdf-page-wrap"
+          style={{
+            width: isQuarterTurn ? `${aspectRatio * 100}%` : "100%",
+            height: isQuarterTurn ? `${(1 / aspectRatio) * 100}%` : "100%",
+            transform: `translate(-50%, -50%) rotate(${rotation}deg)`,
+          }}
+        >
+          <img
+            src={page.image_url}
+            alt={`${page.page} ページ目`}
+            draggable={false}
+            onLoad={(event) => {
+              if (page.width) return;
+              const image = event.currentTarget;
+              setMeasured({ width: image.naturalWidth, height: image.naturalHeight });
+            }}
           />
-        )}
+          {highlight && (
+            <div
+              ref={highlightRef}
+              className="selected-highlight"
+              style={highlight}
+              title={`${selectedRecord?.seq_no ?? ""} ${selectedRecord?.category ?? ""}`}
+            />
+          )}
+        </div>
       </div>
     </div>
   );

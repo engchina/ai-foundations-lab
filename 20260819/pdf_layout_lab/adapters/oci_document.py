@@ -14,6 +14,9 @@ from pdf_layout_lab.settings import Settings
 
 from .base import AdapterAvailability, AnalysisContext, extra_install_command, has_module, missing_dependency_message, object_to_plain
 
+# language 未指定だと OCI が CJK 文書を 1 行も認識しないことがあるため、空応答のときだけこの言語で再試行する。
+# OCI 側は ja / zh を同じ CJK モデルで処理し、結果も一致する。
+OCI_CJK_FALLBACK_LANGUAGE = "ja"
 OCI_SYNC_MAX_PAGES = 5
 OCI_SYNC_MAX_BYTES = 8 * 1024 * 1024
 OCI_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
@@ -51,24 +54,32 @@ class OciDocumentAdapter:
                 batch_index,
             ):
                 encoded = base64.b64encode(input_path.read_bytes()).decode("ascii")
-                details_kwargs = dict(
-                    compartment_id=self.settings.oci_compartment_id,
-                    document=oci.ai_document.models.InlineDocumentDetails(
-                        source="INLINE",
-                        data=encoded,
-                    ),
-                    features=[
-                        oci.ai_document.models.DocumentTextExtractionFeature(feature_type="TEXT_EXTRACTION"),
-                        oci.ai_document.models.DocumentTableExtractionFeature(feature_type="TABLE_EXTRACTION"),
-                    ],
-                )
                 language = _language_or_none(self.settings.oci_document_language)
-                if language:
-                    details_kwargs["language"] = language
-                details = oci.ai_document.models.AnalyzeDocumentDetails(**details_kwargs)
-                response = client.analyze_document(analyze_document_details=details)
-                records.extend(self._records_from_response(object_to_plain(response.data), context, page_number_map))
+                payload = self._analyze_document(client, encoded, language)
+                if _needs_cjk_retry(language, payload):
+                    payload = self._analyze_document(client, encoded, OCI_CJK_FALLBACK_LANGUAGE)
+                records.extend(self._records_from_response(payload, context, page_number_map))
         return records
+
+    def _analyze_document(self, client, encoded: str, language: str | None) -> dict[str, Any]:
+        import oci
+
+        details_kwargs = dict(
+            compartment_id=self.settings.oci_compartment_id,
+            document=oci.ai_document.models.InlineDocumentDetails(
+                source="INLINE",
+                data=encoded,
+            ),
+            features=[
+                oci.ai_document.models.DocumentTextExtractionFeature(feature_type="TEXT_EXTRACTION"),
+                oci.ai_document.models.DocumentTableExtractionFeature(feature_type="TABLE_EXTRACTION"),
+            ],
+        )
+        if language:
+            details_kwargs["language"] = language
+        details = oci.ai_document.models.AnalyzeDocumentDetails(**details_kwargs)
+        response = client.analyze_document(analyze_document_details=details)
+        return object_to_plain(response.data)
 
     def _records_from_response(
         self,
@@ -181,6 +192,18 @@ def _format_page_range(start: int, end: int) -> str:
     if start == end:
         return str(start)
     return f"{start}-{end}"
+
+
+def _needs_cjk_retry(language: str | None, payload: dict[str, Any]) -> bool:
+    """language 未指定で 1 件も返らなかったときだけ CJK 言語で再試行する。"""
+    return language is None and not _has_text(payload)
+
+
+def _has_text(payload: dict[str, Any]) -> bool:
+    for page in payload.get("pages", []) or []:
+        if page.get("lines") or page.get("words") or page.get("tables"):
+            return True
+    return False
 
 
 def _language_or_none(language: str) -> str | None:

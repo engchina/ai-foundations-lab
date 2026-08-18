@@ -126,3 +126,22 @@ class _FakeOciModule:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OciCjkFallbackTests(unittest.TestCase):
+    def test_has_text_detects_lines_words_and_tables(self):
+        from pdf_layout_lab.adapters.oci_document import _has_text
+
+        self.assertFalse(_has_text({}))
+        self.assertFalse(_has_text({"pages": [{"lines": [], "words": [], "tables": []}]}))
+        self.assertTrue(_has_text({"pages": [{"lines": [{"text": "a"}]}]}))
+        self.assertTrue(_has_text({"pages": [{"tables": [{"row_count": 1}]}]}))
+
+    def test_retry_only_when_auto_language_returned_nothing(self):
+        from pdf_layout_lab.adapters.oci_document import _needs_cjk_retry
+
+        empty = {"pages": [{"lines": [], "words": []}]}
+        found = {"pages": [{"lines": [{"text": "电子发票"}]}]}
+        self.assertTrue(_needs_cjk_retry(None, empty))
+        self.assertFalse(_needs_cjk_retry(None, found))
+        self.assertFalse(_needs_cjk_retry("JA", empty))

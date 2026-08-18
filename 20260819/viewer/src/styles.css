@@ -200,9 +200,17 @@ input:focus-visible {
   padding: 18px;
 }
 
-.pdf-page-wrap {
+.pdf-page-frame {
   position: relative;
   margin: 0 auto;
+}
+
+/* 回転しても bbox が一緒に回るよう、画像とハイライトをまとめて transform する */
+.pdf-page-wrap {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform-origin: center;
   background: #fff;
   box-shadow: 0 1px 4px rgb(15 23 42 / 14%);
 }
@@ -210,8 +218,19 @@ input:focus-visible {
 .pdf-page-wrap img {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
   user-select: none;
+}
+
+.preview-note {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.page-tools {
+  display: inline-flex;
+  gap: 8px;
 }
 
 .selected-highlight {
