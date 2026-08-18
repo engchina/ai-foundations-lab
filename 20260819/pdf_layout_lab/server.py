@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -8,11 +9,15 @@ from . import model_pool
 from .adapters import ENGINE_LABELS, ENGINE_ORDER, build_adapters
 from .analysis import analyze_pdf, preview_pdf, summarize_preview, summarize_run
 from .bootstrap import exec_project_venv_if_available
-from .rendering import SUPPORTED_SOURCE_FILE_TYPES
+from .rendering import SUPPORTED_SOURCE_FILE_TYPES, get_pdf_page_count, render_pdf_pages
 from .settings import get_settings
 
 
 PresetValue = TypeVar("PresetValue", int, float)
+
+# 未解析ページは bbox を重ねないので、表示用に低めの DPI で十分
+PREVIEW_PAGE_DPI = 150
+RUN_ID_PATTERN = re.compile(r"[0-9a-f]{6,64}")
 
 DEFAULT_MIN_CONFIDENCE = 0.5
 CONFIDENCE_PRESETS: list[tuple[str, float]] = [
@@ -416,6 +421,26 @@ def create_app():
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     viewer_dist = Path(__file__).resolve().parent.parent / "viewer" / "dist"
     app = FastAPI(title="PDF / 画像レイアウト比較ラボ")
+
+    @app.get("/page-image/{run_id}/{page}.png")
+    def page_image(run_id: str, page: int):
+        """解析対象外のページも元ファイルからその場で描画してプレビューできるようにする。"""
+        from fastapi import HTTPException
+        from fastapi.responses import FileResponse
+
+        if not RUN_ID_PATTERN.fullmatch(run_id) or page < 1:
+            raise HTTPException(status_code=404, detail="ページが見つかりません。")
+        source_pdf = settings.output_dir / run_id / "source.pdf"
+        if not source_pdf.exists():
+            raise HTTPException(status_code=404, detail="ページが見つかりません。")
+        if page > get_pdf_page_count(source_pdf):
+            raise HTTPException(status_code=404, detail="ページが見つかりません。")
+
+        cached = settings.output_dir / run_id / "pages_preview" / f"page_{page:04d}.png"
+        if not cached.exists():
+            render_pdf_pages(source_pdf, [page], settings.output_dir / run_id, PREVIEW_PAGE_DPI, subdir="pages_preview")
+        return FileResponse(str(cached), media_type="image/png")
+
     app.mount("/artifacts", StaticFiles(directory=str(settings.output_dir)), name="artifacts")
     viewer_ready = viewer_dist.exists()
     if viewer_ready:

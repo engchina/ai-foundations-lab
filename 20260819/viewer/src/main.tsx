@@ -269,8 +269,15 @@ function App() {
         ) : (
           <div className="pdf-pane">
             <p className="engine-message">
-              {pageNumber} ページ目はこの解析に含まれていません。このまま「解析を実行」すると、このページを解析します。
+              {pageNumber} ページ目はこの解析に含まれていません。プレビュー表示です。このまま「解析を実行」すると、このページを解析します。
             </p>
+            <div className="pdf-page-wrap">
+              <img
+                src={`/page-image/${data.run_id}/${pageNumber}.png`}
+                alt={`${pageNumber} ページ目`}
+                draggable={false}
+              />
+            </div>
           </div>
         )}
         {!isPreviewOnly && (

@@ -58,6 +58,7 @@ def render_pdf_pages(
     page_numbers: list[int],
     output_dir: str | Path,
     dpi: int,
+    subdir: str = "pages",
 ) -> list[PageImage]:
     """PDF の選択ページを PNG 化し、全エンジン共通の座標基準にする。"""
     try:
@@ -65,7 +66,7 @@ def render_pdf_pages(
     except ImportError as exc:
         raise RuntimeError("PyMuPDF が未インストールのため PDF を画像化できません。`pip install pymupdf` を実行してください。") from exc
 
-    pages_dir = Path(output_dir) / "pages"
+    pages_dir = Path(output_dir) / subdir
     pages_dir.mkdir(parents=True, exist_ok=True)
     rendered: list[PageImage] = []
     scale = float(dpi) / 72.0
