@@ -148,7 +148,11 @@ activemq-data/
 *.sage.py
 
 # Environments
+# Ignore environment files at any depth; keep shareable templates tracked.
 .env
+**/.env
+.env.*
+!.env.example
 .envrc
 .venv
 env/

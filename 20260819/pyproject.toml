@@ -1,0 +1,31 @@
+[project]
+name = "pdf-layout-lab"
+version = "0.1.0"
+description = "PDF layout comparison lab with Gradio and a React bbox viewer."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "gradio>=5.0",
+  "pillow>=10.0",
+  "pymupdf>=1.24",
+  "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+oci = ["oci>=2.184.2"]
+dots = ["torch>=2.7", "transformers>=4.57", "qwen-vl-utils>=0.0.14"]
+unstructured = ["unstructured[local-inference]>=0.18"]
+docling = ["docling>=2.0"]
+pp-doclayout = ["paddleocr>=3.5", "onnxruntime>=1.21"]
+paddle = ["paddleocr>=3.5", "paddlepaddle>=3.2"]
+yolo = ["ultralytics>=8.3"]
+mineru = ["mineru[core]>=2.0"]
+dev = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pdf_layout_lab*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

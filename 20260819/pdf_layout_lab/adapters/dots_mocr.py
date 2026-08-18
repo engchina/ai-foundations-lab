@@ -1,0 +1,494 @@
+from __future__ import annotations
+
+import base64
+from contextlib import contextmanager
+import inspect
+import importlib
+import importlib.machinery
+import json
+import os
+import re
+import sys
+import time
+import types
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+from pdf_layout_lab.categories import normalize_category
+from pdf_layout_lab.coordinates import clamp_bbox
+from pdf_layout_lab.prompts import PROMPT_LAYOUT_ALL_EN
+from pdf_layout_lab.schemas import LayoutRecord
+from pdf_layout_lab.settings import Settings
+
+from .base import AdapterAvailability, AnalysisContext, extra_install_command, has_module
+
+
+LOCAL_BACKENDS = {"transformers", "hf", "local", "local_hf"}
+API_BACKENDS = {"api", "vllm", "openai", "openai_api", "local_vllm"}
+_LOCAL_RUNTIME_CACHE: dict[tuple[str, str, str, str, str], "_LocalDotsMocrRuntime"] = {}
+_FLASH_ATTN_IMPORT_ERROR = (
+    "DOTS_MOCR_ATTN_IMPLEMENTATION=flash_attention_2 には flash_attn が必要です。"
+    "`pip install flash_attn` を実行するか、DOTS_MOCR_ATTN_IMPLEMENTATION=sdpa を指定してください。"
+)
+
+
+class DotsMocrAdapter:
+    engine_id = "dots_mocr"
+    label = "dots.mocr"
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    def availability(self) -> AdapterAvailability:
+        backend = _normalize_backend(self.settings.dots_mocr_backend)
+        if backend in API_BACKENDS:
+            if not self.settings.dots_mocr_base_url:
+                return AdapterAvailability(False, "DOTS_MOCR_BASE_URL が未設定です。")
+            return AdapterAvailability(True, "ローカル vLLM / OpenAI 互換 API へ接続します。")
+        if backend in LOCAL_BACKENDS:
+            missing = [name for name in ("torch", "transformers", "qwen_vl_utils") if not has_module(name)]
+            if missing:
+                install = extra_install_command("dots")
+                return AdapterAvailability(
+                    False,
+                    f"dots.mocr ローカル実行の依存関係が未インストールです。プロジェクト直下で `{install}` を実行してから再試行してください。不足: {', '.join(missing)}",
+                )
+            if _explicitly_requires_flash_attn(
+                self.settings.dots_mocr_attn_implementation
+            ) and not _flash_attn_available():
+                return AdapterAvailability(False, _FLASH_ATTN_IMPORT_ERROR)
+            device = self.settings.dots_mocr_device or "auto"
+            return AdapterAvailability(True, f"Transformers で dots.mocr をローカル実行します（device={device}）。")
+        return AdapterAvailability(
+            False,
+            f"DOTS_MOCR_BACKEND={self.settings.dots_mocr_backend!r} は未対応です。transformers または api を指定してください。",
+        )
+
+    def analyze(self, context: AnalysisContext) -> list[LayoutRecord]:
+        backend = _normalize_backend(self.settings.dots_mocr_backend)
+        records: list[LayoutRecord] = []
+        for page_image in context.pages:
+            if backend in API_BACKENDS:
+                response_text = self._call_vllm(Path(page_image.image_path))
+            else:
+                response_text = self._call_transformers(Path(page_image.image_path), context)
+            payload = extract_first_json(response_text)
+            elements = coerce_layout_elements(payload)
+            for index, element in enumerate(elements, start=1):
+                confidence = _optional_float(element.get("confidence") or element.get("score"))
+                if confidence is not None and confidence < context.min_confidence:
+                    continue
+                bbox = element.get("bbox") or element.get("box")
+                if not bbox:
+                    continue
+                category = normalize_category(element.get("category") or element.get("type"))
+                text = "" if category == "Picture" else str(element.get("text") or element.get("content") or "")
+                records.append(
+                    LayoutRecord(
+                        id=f"dots-p{page_image.page}-{index}",
+                        engine=self.engine_id,
+                        page=page_image.page,
+                        seq_no=index,
+                        bbox=clamp_bbox(bbox, page_image.width, page_image.height),
+                        coord_system="image_top_left",
+                        page_width=page_image.width,
+                        page_height=page_image.height,
+                        category=category,
+                        text=text,
+                        confidence=confidence,
+                        raw_type=str(element.get("category") or element.get("type") or ""),
+                        raw=dict(element),
+                    )
+                )
+        return records
+
+    def _call_transformers(self, image_path: Path, context: AnalysisContext) -> str:
+        _prepare_runtime_env(context)
+        runtime = _get_local_runtime(self.settings)
+        return runtime.infer(image_path, PROMPT_LAYOUT_ALL_EN, self.settings.dots_mocr_max_new_tokens)
+
+    def _call_vllm(self, image_path: Path) -> str:
+        image_bytes = image_path.read_bytes()
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        payload = {
+            "model": self.settings.dots_mocr_model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": PROMPT_LAYOUT_ALL_EN},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{encoded}"},
+                        },
+                    ],
+                }
+            ],
+            "temperature": 0,
+        }
+        data = json.dumps(payload).encode("utf-8")
+        request = urllib.request.Request(
+            url=f"{self.settings.dots_mocr_base_url.rstrip('/')}/chat/completions",
+            data=data,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.settings.dots_mocr_api_key or 'EMPTY'}",
+            },
+        )
+        started = time.monotonic()
+        try:
+            with urllib.request.urlopen(request, timeout=self.settings.dots_mocr_timeout_seconds) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"dots.mocr API に接続できませんでした: {exc}") from exc
+        if time.monotonic() - started > self.settings.dots_mocr_timeout_seconds:
+            raise RuntimeError("dots.mocr API がタイムアウトしました。")
+        return str(result["choices"][0]["message"]["content"])
+
+
+class _LocalDotsMocrRuntime:
+    def __init__(self, settings: Settings):
+        import torch
+        from qwen_vl_utils import process_vision_info
+        from transformers import AutoConfig, AutoModelForCausalLM, AutoProcessor
+
+        self.torch = torch
+        self.process_vision_info = process_vision_info
+        self.device = _resolve_device(torch, settings.dots_mocr_device)
+        self.input_device = _resolve_input_device(self.device, settings.dots_mocr_device_map)
+        model_kwargs: dict[str, Any] = {"trust_remote_code": True}
+        dtype = _resolve_torch_dtype(torch, settings.dots_mocr_torch_dtype, self.device)
+        if dtype is not None:
+            model_kwargs["torch_dtype"] = dtype
+        flash_attn_available = _flash_attn_available()
+        attn_implementation = _resolve_attn_implementation(
+            settings.dots_mocr_attn_implementation,
+            flash_attn_available=flash_attn_available,
+            device=self.device,
+        )
+        if attn_implementation:
+            model_kwargs["attn_implementation"] = attn_implementation
+        device_map = settings.dots_mocr_device_map.strip()
+        if device_map:
+            model_kwargs["device_map"] = device_map
+
+        with _flash_attn_import_fallback(attn_implementation, flash_attn_available):
+            if attn_implementation:
+                config = AutoConfig.from_pretrained(settings.dots_mocr_model, trust_remote_code=True)
+                _set_vision_attn_implementation(config, attn_implementation)
+                model_kwargs["config"] = config
+            self.model = AutoModelForCausalLM.from_pretrained(settings.dots_mocr_model, **model_kwargs)
+        effective_dtype = dtype or _default_runtime_dtype(torch, self.device)
+        _cast_floating_tensors_to_dtype(self.model, effective_dtype)
+        _patch_vision_tower_forward(self.model, torch)
+        if not device_map:
+            self.model.to(self.device)
+        self.model.eval()
+        self.processor = AutoProcessor.from_pretrained(settings.dots_mocr_model, trust_remote_code=True, use_fast=True)
+
+    def infer(self, image_path: Path, prompt: str, max_new_tokens: int) -> str:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": str(image_path)},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, video_inputs = self.process_vision_info(messages)
+        inputs = self.processor(
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(self.input_device)
+        with self.torch.inference_mode():
+            generated_ids = self.model.generate(**inputs, max_new_tokens=max_new_tokens)
+        generated_ids_trimmed = [
+            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+        ]
+        return str(
+            self.processor.batch_decode(
+                generated_ids_trimmed,
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=False,
+            )[0]
+        )
+
+
+def _get_local_runtime(settings: Settings) -> _LocalDotsMocrRuntime:
+    key = (
+        settings.dots_mocr_model,
+        settings.dots_mocr_device,
+        settings.dots_mocr_device_map,
+        settings.dots_mocr_torch_dtype,
+        settings.dots_mocr_attn_implementation,
+    )
+    runtime = _LOCAL_RUNTIME_CACHE.get(key)
+    if runtime is None:
+        runtime = _LocalDotsMocrRuntime(settings)
+        _LOCAL_RUNTIME_CACHE[key] = runtime
+    return runtime
+
+
+def _prepare_runtime_env(context: AnalysisContext) -> None:
+    cache_root = context.settings.output_dir / "_cache" / "dots_mocr"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("XDG_CACHE_HOME", str(cache_root / "xdg"))
+    os.environ.setdefault("HF_HOME", str(cache_root / "huggingface"))
+    os.environ.setdefault("MODELSCOPE_CACHE", str(cache_root / "modelscope"))
+    os.environ.setdefault("MPLCONFIGDIR", str(cache_root / "matplotlib"))
+    os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+
+def _normalize_backend(value: str) -> str:
+    return (value or "transformers").strip().lower().replace("-", "_")
+
+
+def _resolve_device(torch: Any, requested: str) -> str:
+    value = (requested or "auto").strip().lower()
+    if value == "auto":
+        if torch.cuda.is_available():
+            return "cuda"
+        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+    return value
+
+
+def _resolve_input_device(device: str, device_map: str) -> str:
+    if device_map and device_map.strip().lower() == "auto":
+        return "cuda" if device == "cuda" else device
+    return device
+
+
+def _normalize_attn_implementation(requested: str) -> str:
+    value = (requested or "auto").strip().lower().replace("-", "_")
+    aliases = {
+        "fa2": "flash_attention_2",
+        "flash": "flash_attention_2",
+        "flash_attn": "flash_attention_2",
+        "flash_attention": "flash_attention_2",
+    }
+    return aliases.get(value, value)
+
+
+def _explicitly_requires_flash_attn(requested: str) -> bool:
+    return _normalize_attn_implementation(requested) == "flash_attention_2"
+
+
+def _flash_attn_available() -> bool:
+    if not has_module("flash_attn"):
+        return False
+    try:
+        module = importlib.import_module("flash_attn")
+    except Exception:
+        return False
+    return hasattr(module, "flash_attn_varlen_func")
+
+
+def _resolve_attn_implementation(requested: str, *, flash_attn_available: bool, device: str) -> str | None:
+    value = _normalize_attn_implementation(requested)
+    if value in {"", "auto"}:
+        return None if flash_attn_available and device == "cuda" else "sdpa"
+    if value == "flash_attention_2" and not flash_attn_available:
+        raise RuntimeError(_FLASH_ATTN_IMPORT_ERROR)
+    return value
+
+
+def _set_vision_attn_implementation(config: Any, attn_implementation: str) -> None:
+    vision_config = getattr(config, "vision_config", None)
+    if isinstance(vision_config, dict):
+        vision_config["attn_implementation"] = attn_implementation
+    elif vision_config is not None:
+        setattr(vision_config, "attn_implementation", attn_implementation)
+
+
+@contextmanager
+def _flash_attn_import_fallback(attn_implementation: str | None, flash_attn_available: bool):
+    if flash_attn_available or attn_implementation == "flash_attention_2":
+        yield
+        return
+
+    sentinel = object()
+    previous = sys.modules.get("flash_attn", sentinel)
+    module = types.ModuleType("flash_attn")
+    module.__spec__ = importlib.machinery.ModuleSpec("flash_attn", loader=None)
+
+    def flash_attn_varlen_func(*args, **kwargs):
+        raise RuntimeError(_FLASH_ATTN_IMPORT_ERROR)
+
+    module.flash_attn_varlen_func = flash_attn_varlen_func
+    sys.modules["flash_attn"] = module
+    try:
+        yield
+    finally:
+        if previous is sentinel:
+            sys.modules.pop("flash_attn", None)
+        else:
+            sys.modules["flash_attn"] = previous
+
+
+def _resolve_torch_dtype(torch: Any, requested: str, device: str) -> Any | None:
+    value = (requested or "auto").strip().lower()
+    if value == "auto":
+        if device == "cuda":
+            bf16_supported = getattr(torch.cuda, "is_bf16_supported", lambda: False)()
+            return torch.bfloat16 if bf16_supported else torch.float16
+        return None
+    dtype_by_name = {
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "float32": torch.float32,
+        "fp32": torch.float32,
+    }
+    return dtype_by_name.get(value)
+
+
+def _default_runtime_dtype(torch: Any, device: str) -> Any:
+    if device == "cuda":
+        bf16_supported = getattr(torch.cuda, "is_bf16_supported", lambda: False)()
+        return torch.bfloat16 if bf16_supported else torch.float16
+    return torch.float32
+
+
+def _iter_tensors(module: Any, method_name: str):
+    method = getattr(module, method_name, None)
+    if not callable(method):
+        return ()
+    try:
+        return method(recurse=True)
+    except TypeError:
+        return method()
+
+
+def _is_floating_tensor(tensor: Any) -> bool:
+    is_floating_point = getattr(tensor, "is_floating_point", None)
+    if callable(is_floating_point):
+        return bool(is_floating_point())
+    dtype = getattr(tensor, "dtype", None)
+    return dtype is not None and "float" in str(dtype).lower()
+
+
+def _cast_tensor_to_dtype(tensor: Any, dtype: Any) -> None:
+    if getattr(tensor, "dtype", None) == dtype or getattr(tensor, "is_meta", False):
+        return
+    data = getattr(tensor, "data", None)
+    if data is not None and hasattr(data, "to"):
+        tensor.data = data.to(dtype=dtype)
+        return
+    to = getattr(tensor, "to", None)
+    if callable(to):
+        to(dtype=dtype)
+
+
+def _cast_floating_tensors_to_dtype(module: Any, dtype: Any | None) -> None:
+    if dtype is None:
+        return
+    for tensor in _iter_tensors(module, "parameters"):
+        if _is_floating_tensor(tensor):
+            _cast_tensor_to_dtype(tensor, dtype)
+    for tensor in _iter_tensors(module, "buffers"):
+        if _is_floating_tensor(tensor):
+            _cast_tensor_to_dtype(tensor, dtype)
+
+
+def _first_floating_dtype(module: Any) -> Any | None:
+    for tensor in _iter_tensors(module, "parameters"):
+        if _is_floating_tensor(tensor):
+            return getattr(tensor, "dtype", None)
+    for tensor in _iter_tensors(module, "buffers"):
+        if _is_floating_tensor(tensor):
+            return getattr(tensor, "dtype", None)
+    return None
+
+
+def _dtype_is(torch: Any, dtype: Any, name: str) -> bool:
+    expected = getattr(torch, name, None)
+    return expected is not None and dtype == expected
+
+
+def _patch_vision_tower_forward(model: Any, torch: Any) -> None:
+    vision_tower = getattr(model, "vision_tower", None)
+    if vision_tower is None or getattr(vision_tower, "_pdf_layout_lab_dtype_patch", False):
+        return
+    original_forward = getattr(vision_tower, "forward", None)
+    if not callable(original_forward):
+        return
+    try:
+        accepts_bf16 = "bf16" in inspect.signature(original_forward).parameters
+    except (TypeError, ValueError):
+        accepts_bf16 = False
+    if not accepts_bf16:
+        return
+
+    def patched_forward(hidden_states, grid_thw=None, *args, **kwargs):
+        target_dtype = _first_floating_dtype(vision_tower)
+        if target_dtype is not None and hasattr(hidden_states, "to"):
+            hidden_states = hidden_states.to(dtype=target_dtype)
+        if "bf16" not in kwargs and not args:
+            kwargs["bf16"] = _dtype_is(torch, target_dtype, "bfloat16")
+        return original_forward(hidden_states, grid_thw, *args, **kwargs)
+
+    setattr(vision_tower, "_pdf_layout_lab_original_forward", original_forward)
+    setattr(vision_tower, "_pdf_layout_lab_dtype_patch", True)
+    setattr(vision_tower, "forward", patched_forward)
+
+
+def extract_first_json(text: str) -> Any:
+    """LLM 応答から最初の JSON オブジェクト/配列を取り出す。"""
+    stripped = text.strip()
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", stripped, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        stripped = fenced.group(1).strip()
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    starts = [pos for pos in [stripped.find("{"), stripped.find("[")] if pos >= 0]
+    if not starts:
+        raise ValueError("JSON 応答が見つかりませんでした。")
+    start = min(starts)
+    for end in range(len(stripped), start, -1):
+        candidate = stripped[start:end].strip()
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+    raise ValueError("JSON 応答を解析できませんでした。")
+
+
+def coerce_layout_elements(payload: Any) -> list[dict[str, Any]]:
+    """トップレベルキーが固定されていない JSON を要素配列へ寄せる。"""
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("elements", "layout", "layouts", "results", "items", "blocks"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+    dict_items = [value for value in payload.values() if isinstance(value, dict) and ("bbox" in value or "box" in value)]
+    if dict_items:
+        return dict_items
+    if "bbox" in payload or "box" in payload:
+        return [payload]
+    return []
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
