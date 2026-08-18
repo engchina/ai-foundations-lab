@@ -352,6 +352,10 @@ dots.mocr の重みは bf16 で約 5.7 GB、300 DPI の A4 ページ 1 枚を解
 
 dots.mocr では公式 `prompt_layout_all_en` をそのまま使用します。長い独自プロンプトには置き換えません。
 
+公式プロンプトは `Picture` カテゴリの text を出力しない仕様のため、text が空の Picture については、その領域を切り出して同じ `prompt_layout_all_en` で再解析し、要素ごとの text を読み順に連結して埋めます（1 ページあたり 8 枚まで）。切り出し画像は `.runs/<run_id>/dots_mocr/` に保存します。
+
+公式 `prompt_ocr` は図の見出しだけを返すことがあり、`prompt_grounding_ocr` は bbox の座標系が processor 側の resize と一致せず別領域を読むため、この用途では使用していません。
+
 ## 出力
 
 - `results.json`: 正規化済みの全結果

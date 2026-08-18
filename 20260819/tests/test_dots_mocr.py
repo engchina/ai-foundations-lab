@@ -1,6 +1,8 @@
 import sys
+import tempfile
 import types
 import unittest
+from pathlib import Path
 from dataclasses import replace
 from unittest.mock import patch
 
@@ -339,3 +341,73 @@ class VisionSdpaAttentionPatchTests(unittest.TestCase):
                 self.assertTrue(torch.allclose(expected, actual, atol=1e-5), f"cu_seqlens={cu_seqlens.tolist()}")
         finally:
             sys.modules.pop(module.__name__, None)
+
+
+class DotsMocrPictureOcrTests(unittest.TestCase):
+    def _record(self, bbox, text=""):
+        from pdf_layout_lab.schemas import LayoutRecord
+
+        return LayoutRecord(
+            id="dots-p1-1",
+            engine="dots_mocr",
+            page=1,
+            seq_no=1,
+            bbox=bbox,
+            coord_system="image_top_left",
+            page_width=800,
+            page_height=1000,
+            category="Picture",
+            text=text,
+        )
+
+    def test_small_picture_is_skipped(self):
+        from PIL import Image
+
+        from pdf_layout_lab.adapters.dots_mocr import _save_picture_crop
+
+        with tempfile.TemporaryDirectory() as tmp:
+            page_picture = Image.new("RGB", (800, 1000), "white")
+            self.assertIsNone(_save_picture_crop(page_picture, self._record([10, 10, 20, 20]), Path(tmp)))
+            crop_path = _save_picture_crop(page_picture, self._record([100, 100, 400, 500]), Path(tmp))
+            self.assertIsNotNone(crop_path)
+            with Image.open(crop_path) as crop:
+                # 8px の余白付きで切り出す
+                self.assertEqual(crop.size, (316, 416))
+
+    def test_empty_picture_text_is_filled_from_crop(self):
+        from PIL import Image
+
+        from pdf_layout_lab.adapters.dots_mocr import DotsMocrAdapter
+        from pdf_layout_lab.adapters.base import AnalysisContext
+        from pdf_layout_lab.schemas import PageImage
+        from pdf_layout_lab.settings import get_settings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            image_path = run_dir / "page.png"
+            Image.new("RGB", (800, 1000), "white").save(image_path)
+            page = PageImage(page=1, width=800, height=1000, pdf_width=595, pdf_height=842, image_path=str(image_path))
+            settings = get_settings()
+            adapter = DotsMocrAdapter(settings)
+            prompts = []
+
+            def fake_infer(path, prompt, backend, context):
+                prompts.append(prompt)
+                return '{"elements": [{"bbox": [0, 0, 10, 10], "category": "Text", "text": "開始"}, {"bbox": [0, 20, 10, 30], "category": "Text", "text": "計画員"}]}'
+
+            adapter._infer = fake_infer
+            picture = self._record([100, 100, 400, 500])
+            filled = self._record([100, 100, 400, 500], text="既にテキストがある")
+            adapter._ocr_pictures(page, [picture, filled], "transformers", AnalysisContext(
+                pdf_path=run_dir / "source.pdf",
+                run_dir=run_dir,
+                pages=[page],
+                settings=settings,
+                min_confidence=0.5,
+            ))
+
+        self.assertEqual(picture.text, "開始\n計画員")
+        self.assertTrue(picture.raw.get("picture_ocr"))
+        self.assertEqual(filled.text, "既にテキストがある")
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("Layout Categories", prompts[0])

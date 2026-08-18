@@ -34,6 +34,31 @@ _FLASH_ATTN_IMPORT_ERROR = (
 )
 
 
+PICTURE_OCR_MAX_PER_PAGE = 8
+PICTURE_OCR_PADDING = 8
+PICTURE_OCR_MIN_SIDE = 32
+
+
+def _save_picture_crop(page_picture, record: LayoutRecord, crop_dir: Path) -> Path | None:
+    x1, y1, x2, y2 = (float(value) for value in record.bbox)
+    left = max(0, int(x1) - PICTURE_OCR_PADDING)
+    top = max(0, int(y1) - PICTURE_OCR_PADDING)
+    right = min(page_picture.width, int(x2) + PICTURE_OCR_PADDING)
+    bottom = min(page_picture.height, int(y2) + PICTURE_OCR_PADDING)
+    if right - left < PICTURE_OCR_MIN_SIDE or bottom - top < PICTURE_OCR_MIN_SIDE:
+        return None
+    crop_path = crop_dir / f"{record.id}.png"
+    page_picture.crop((left, top, right, bottom)).save(crop_path)
+    return crop_path
+
+
+def _texts_from_layout_response(response_text: str) -> str:
+    elements = coerce_layout_elements(extract_first_json(response_text))
+    texts = [str(element.get("text") or element.get("content") or "").strip() for element in elements]
+    joined = "\n".join(text for text in texts if text)
+    return joined or response_text.strip()
+
+
 class DotsMocrAdapter:
     engine_id = "dots_mocr"
     label = "dots.mocr"
@@ -70,10 +95,8 @@ class DotsMocrAdapter:
         backend = _normalize_backend(self.settings.dots_mocr_backend)
         records: list[LayoutRecord] = []
         for page_image in context.pages:
-            if backend in API_BACKENDS:
-                response_text = self._call_vllm(Path(page_image.image_path))
-            else:
-                response_text = self._call_transformers(Path(page_image.image_path), context)
+            page_records: list[LayoutRecord] = []
+            response_text = self._infer(Path(page_image.image_path), PROMPT_LAYOUT_ALL_EN, backend, context)
             payload = extract_first_json(response_text)
             elements = coerce_layout_elements(payload)
             for index, element in enumerate(elements, start=1):
@@ -85,7 +108,7 @@ class DotsMocrAdapter:
                     continue
                 category = normalize_category(element.get("category") or element.get("type"))
                 text = "" if category == "Picture" else str(element.get("text") or element.get("content") or "")
-                records.append(
+                page_records.append(
                     LayoutRecord(
                         id=f"dots-p{page_image.page}-{index}",
                         engine=self.engine_id,
@@ -102,7 +125,47 @@ class DotsMocrAdapter:
                         raw=dict(element),
                     )
                 )
+            self._ocr_pictures(page_image, page_records, backend, context)
+            records.extend(page_records)
         return records
+
+    def _ocr_pictures(
+        self,
+        page_image,
+        records: list[LayoutRecord],
+        backend: str,
+        context: AnalysisContext,
+    ) -> None:
+        """公式プロンプトが text を返さない Picture を切り出し、同じ prompt_layout_all_en で本文を取り直す。
+
+        公式 prompt_ocr は図の見出しだけを返すことがあり、prompt_grounding_ocr は bbox の
+        座標系が processor 側の resize と合わず別領域を読むため、切り出し画像に対して
+        prompt_layout_all_en を使い、要素ごとの text を読み順に連結する。
+        """
+        targets = [record for record in records if record.category == "Picture" and not record.text.strip()]
+        if not targets:
+            return
+
+        from PIL import Image
+
+        crop_dir = Path(context.run_dir) / "dots_mocr"
+        crop_dir.mkdir(parents=True, exist_ok=True)
+        with Image.open(page_image.image_path) as opened:
+            page_picture = opened.convert("RGB")
+        # ponytail: 1 枚ごとに推論が走るのでページあたりの上限を置く。足りなければ増やす
+        for record in targets[:PICTURE_OCR_MAX_PER_PAGE]:
+            crop_path = _save_picture_crop(page_picture, record, crop_dir)
+            if not crop_path:
+                continue
+            text = _texts_from_layout_response(self._infer(crop_path, PROMPT_LAYOUT_ALL_EN, backend, context))
+            if text:
+                record.text = text
+                record.raw["picture_ocr"] = True
+
+    def _infer(self, image_path: Path, prompt: str, backend: str, context: AnalysisContext) -> str:
+        if backend in API_BACKENDS:
+            return self._call_vllm(image_path, prompt)
+        return self._call_transformers(image_path, prompt, context)
 
     def preload(self) -> None:
         """モデルを事前にロードして常駐させる（UI の「ロード」ボタン用）。"""
@@ -110,12 +173,12 @@ class DotsMocrAdapter:
             _prepare_runtime_env(self.settings)
             _get_local_runtime(self.settings)
 
-    def _call_transformers(self, image_path: Path, context: AnalysisContext) -> str:
+    def _call_transformers(self, image_path: Path, prompt: str, context: AnalysisContext) -> str:
         _prepare_runtime_env(context.settings)
         runtime = _get_local_runtime(self.settings)
-        return runtime.infer(image_path, PROMPT_LAYOUT_ALL_EN, self.settings.dots_mocr_max_new_tokens)
+        return runtime.infer(image_path, prompt, self.settings.dots_mocr_max_new_tokens)
 
-    def _call_vllm(self, image_path: Path) -> str:
+    def _call_vllm(self, image_path: Path, prompt: str) -> str:
         image_bytes = image_path.read_bytes()
         encoded = base64.b64encode(image_bytes).decode("ascii")
         payload = {
@@ -124,7 +187,7 @@ class DotsMocrAdapter:
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": PROMPT_LAYOUT_ALL_EN},
+                        {"type": "text", "text": prompt},
                         {
                             "type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{encoded}"},
