@@ -154,10 +154,10 @@ function App() {
     if (record.page !== pageNumber) changePage(record.page);
   }
 
-  function submitGoToPage(event: React.FormEvent) {
-    event.preventDefault();
-    const value = Number(goToPage);
-    if (Number.isInteger(value)) changePage(value);
+  function inputPage(value: string) {
+    setGoToPage(value);
+    const page = Number(value);
+    if (Number.isInteger(page) && page >= 1 && page <= sourcePageCount) setPageNumber(page);
   }
 
   if (loading) {
@@ -210,20 +210,17 @@ function App() {
         >
           <ChevronLeft aria-hidden="true" />
         </button>
-        <form onSubmit={submitGoToPage} className="page-jump">
-          <span>
-            ページ {pageNumber} / {sourcePageCount}
-          </span>
+        <div className="page-jump">
           <input
             aria-label="ページ番号"
             type="number"
             min={1}
             max={sourcePageCount}
             value={goToPage}
-            onChange={(event) => setGoToPage(event.target.value)}
+            onChange={(event) => inputPage(event.target.value)}
           />
-          <button type="submit">移動</button>
-        </form>
+          <span>/ {sourcePageCount}</span>
+        </div>
         <button
           type="button"
           aria-label="次のページ"
