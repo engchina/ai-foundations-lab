@@ -1,15 +1,19 @@
-# PDF レイアウト比較ラボ
+# PDF / 画像レイアウト比較ラボ
 
-PDF をアップロードし、OCI Document Understanding、MinerU、dots.mocr、Unstructured、Docling、PyMuPDF、YOLOv10、PP-DocLayoutV3 のレイアウト解析結果をページごとに比較するための Gradio アプリです。React ビューアは `pdf-jsonl-viewer` と同じ発想で、JSONL の行をクリックすると対応する bbox をページ上で強調表示します。
+PDF または画像をアップロードし、OCI Document Understanding、MinerU、dots.mocr、Unstructured、Docling、PyMuPDF、YOLOv10、PP-DocLayoutV3 のレイアウト解析結果をページごとに比較するための Gradio アプリです。React ビューアは `pdf-jsonl-viewer` と同じ発想で、JSONL の行をクリックすると対応する bbox をページ上で強調表示します。
 
 ## セットアップ
+
+Python は 3.12 を推奨します。仮想環境は `uv` でプロジェクト直下の `.venv` に作成します。既存の `.venv` が別の Python や Conda 由来で作成されている場合は、削除してから作り直してください。
 
 最小構成では Gradio、PyMuPDF、React ビューアだけをインストールします。OCI、MinerU、dots.mocr、Unstructured、Docling、YOLOv10、PP-DocLayoutV3 などの重いエンジンは必要なものだけ追加します。
 
 ```bash
-python3 -m venv .venv
+rm -rf .venv
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab venv --python 3.12 .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -r requirements.txt
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python pip
 
 cd viewer
 npm install
@@ -21,41 +25,133 @@ cp .env.example .env
 
 OCI、MinerU、dots.mocr、Unstructured、Docling、YOLOv10、PP-DocLayoutV3 は追加の依存関係やモデルが必要です。未設定の場合、アプリ上では該当エンジンが無効として表示されます。
 
+## WSL Ubuntu でのデプロイ
+
+Windows 上の WSL Ubuntu で動かす場合は、Ubuntu 24.04 など Python 3.12 を使える環境を推奨します。Python 3.12 がない場合は、OS を更新するか pyenv などで Python 3.12 を用意してください。`uv` も事前にインストールし、`uv --version` が実行できる状態にします。
+
+```bash
+sudo apt update
+sudo apt install -y git build-essential curl python3.12 python3.12-venv
+
+python3.12 --version
+uv --version
+```
+
+React ビューアのビルドには Node.js `20.19` 以上、または `22.12` 以上が必要です。Ubuntu 標準パッケージの `nodejs` が古い場合は、nvm、Volta、NodeSource などで新しい Node.js を入れてください。
+
+```bash
+node --version
+npm --version
+```
+
+リポジトリを配置したディレクトリで、バックエンドと React ビューアをセットアップします。
+
+```bash
+rm -rf .venv
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab venv --python 3.12 .venv
+source .venv/bin/activate
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -r requirements.txt
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python pip
+
+cd viewer
+npm install
+npm run build
+cd ..
+
+cp .env.example .env
+```
+
+WSL 内だけで使う場合は既定の `127.0.0.1:7860` のままで起動できます。Windows 側のブラウザから開く場合も、通常は `http://127.0.0.1:7860` でアクセスできます。
+
+```bash
+source .venv/bin/activate
+.venv/bin/python app.py
+```
+
+同じ LAN 上の別端末からアクセスさせたい場合は、`.env` で host を `0.0.0.0` に変更し、Windows Defender Firewall で該当ポートを許可してください。
+
+```bash
+PDF_LAYOUT_LAB_HOST=0.0.0.0
+PDF_LAYOUT_LAB_PORT=7860
+```
+
+## macOS でのデプロイ
+
+macOS では Homebrew で Python 3.12、uv、Node.js を用意します。Apple Silicon / Intel Mac のどちらでも同じ手順で進められます。
+
+```bash
+brew install python@3.12 uv node
+
+python3.12 --version
+uv --version
+node --version
+npm --version
+```
+
+React ビューアのビルドには Node.js `20.19` 以上、または `22.12` 以上が必要です。`node --version` が古い場合は `brew upgrade node` で更新してください。
+
+リポジトリを配置したディレクトリで、仮想環境を作成して依存関係を入れます。
+
+```bash
+rm -rf .venv
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab venv --python 3.12 .venv
+source .venv/bin/activate
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -r requirements.txt
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python pip
+
+cd viewer
+npm install
+npm run build
+cd ..
+
+cp .env.example .env
+```
+
+ローカル利用では既定の `127.0.0.1:7860` のままで十分です。起動後、ブラウザで `http://127.0.0.1:7860` を開きます。
+
+```bash
+source .venv/bin/activate
+.venv/bin/python app.py
+```
+
+LAN 内の別端末からアクセスする場合は、`.env` で host を `0.0.0.0` に変更し、macOS のファイアウォール設定で Python からの受信接続を許可してください。
+
+```bash
+PDF_LAYOUT_LAB_HOST=0.0.0.0
+PDF_LAYOUT_LAB_PORT=7860
+```
+
 ## 追加エンジンのインストール
 
-以下のコマンドは、この README があるプロジェクト直下で実行してください。仮想環境を有効化していない場合でも動くように `.venv/bin/pip` を使っています。
+以下のコマンドは、この README があるプロジェクト直下で実行してください。`uv` で `.venv/bin/python` を明示しているため、仮想環境を有効化していない場合でも同じ環境へ入ります。
 
 ### まとめてインストール
 
 ```bash
-.venv/bin/pip install -e '.[dots,oci,unstructured,docling,pp-doclayout,yolo]'
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[dots,oci,unstructured,docling,pp-doclayout,paddle,yolo,mineru,dev]' --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
 ```
 
-PaddlePaddle の `paddle_static` engine で PP-DocLayoutV3 を使う場合は、代わりに、または追加で次を実行します。
-
-```bash
-.venv/bin/pip install -e '.[paddle]'
-```
+PyTorch CPU index と PyPI の両方を使うため、`uv` の index 解決では `--index-strategy unsafe-best-match` を指定します。これを省くと、PyTorch CPU index 側に古い `tqdm` などが見つかった時点で PyPI の新しい互換バージョンが候補から外れ、MinerU などの依存解決に失敗する場合があります。
 
 ### 個別にインストール
 
 | エンジン | コマンド | 追加設定 |
 | --- | --- | --- |
-| dots.mocr | `.venv/bin/pip install -e '.[dots]'` | 既定では Transformers でローカル実行します。必要に応じて `DOTS_MOCR_MODEL` にローカル重みディレクトリを指定します。 |
-| OCI Document Understanding | `.venv/bin/pip install -e '.[oci]'` | `.env` に `OCI_COMPARTMENT_ID`、必要に応じて `OCI_CONFIG_FILE` と `OCI_PROFILE` を設定します。 |
-| Unstructured | `.venv/bin/pip install -e '.[unstructured]'` | high-res partition 用の依存が入ります。環境によっては OCR 関連のシステムパッケージが別途必要です。 |
-| Docling | `.venv/bin/pip install -e '.[docling]' --extra-index-url https://download.pytorch.org/whl/cpu` | CPU 実行では `DOCLING_DEVICE=cpu` を使います。初回実行時にモデルや追加データの取得が発生する場合があります。 |
-| PP-DocLayoutV3 | `.venv/bin/pip install -e '.[pp-doclayout]'` | CPU 向けに PaddleOCR の `onnxruntime` engine で実行します。既定は `PP_DOCLAYOUT_MODEL=PP-DocLayoutV3`、`PP_DOCLAYOUT_ENGINE=onnxruntime` です。 |
-| PP-DocLayoutV3 (PaddlePaddle) | `.venv/bin/pip install -e '.[paddle]'` | PaddlePaddle の `paddle_static` / `paddle_dynamic` engine で実行したい場合に使います。 |
-| YOLOv10 DocLayNet | `.venv/bin/pip install -e '.[yolo]'` | `YOLOV10_MODEL_PATH=models/yolov10x_best.pt` に重みファイルを配置するか、`.env` でパスを変更します。 |
-| MinerU / MinerU2.5-Pro | `.venv/bin/pip install -e '.[mineru]'` | CPU 実行向けに `mineru[core]` を入れ、`MINERU_BACKEND=pipeline` を使います。初回実行時にモデル取得が発生する場合があります。 |
+| dots.mocr | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[dots]' --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match` | 既定では Transformers でローカル実行します。必要に応じて `DOTS_MOCR_MODEL` にローカル重みディレクトリを指定します。 |
+| OCI Document Understanding | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[oci]'` | `.env` に `OCI_COMPARTMENT_ID`、必要に応じて `OCI_CONFIG_FILE` と `OCI_PROFILE` を設定します。 |
+| Unstructured | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[unstructured]'` | high-res partition 用の依存が入ります。環境によっては OCR 関連のシステムパッケージが別途必要です。 |
+| Docling | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[docling]' --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match` | CPU 実行では `DOCLING_DEVICE=cpu` を使います。初回実行時にモデルや追加データの取得が発生する場合があります。 |
+| PP-DocLayoutV3 | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[pp-doclayout]'` | CPU 向けに PaddleOCR の `onnxruntime` engine で実行します。既定は `PP_DOCLAYOUT_MODEL=PP-DocLayoutV3`、`PP_DOCLAYOUT_ENGINE=onnxruntime` です。 |
+| PP-DocLayoutV3 (PaddlePaddle) | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[paddle]'` | PaddlePaddle の `paddle_static` / `paddle_dynamic` engine で実行したい場合に使います。 |
+| YOLOv10 DocLayNet | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[yolo]' --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match` | `YOLOV10_MODEL_PATH=models/yolov10x_best.pt` に重みファイルを配置するか、`.env` でパスを変更します。 |
+| MinerU / MinerU2.5-Pro | `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[mineru]' --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match` | CPU 実行向けに `mineru[core]` を入れ、`MINERU_BACKEND=pipeline` を使います。初回実行時にモデル取得が発生する場合があります。 |
 
 ### dots.mocr
 
 dots.mocr は既定で外部 API ではなく、同じ Python プロセス内の Transformers 推論としてローカル実行します。
 
 ```bash
-.venv/bin/pip install -e '.[dots]'
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[dots]' --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
 ```
 
 既定設定:
@@ -99,12 +195,14 @@ OCI_DOCUMENT_LANGUAGE=auto
 
 同期 `AnalyzeDocument` では入力 PDF のページ数制限があるため、アプリは指定された解析ページだけを一時 PDF に切り出してから OCI へ送信します。複数ページを指定した場合は 5 ページ単位で batch 実行し、OCI 応答のページ番号を元 PDF のページ番号へ戻して JSONL とビューアへ出力します。
 
+OCI Document Understanding の同期入力は 5 ページ以下、かつ 8 MB 以下です。画像アップロードやスキャン PDF では、一時 PDF が元画像より大きくなる場合があります。その場合、アプリは単一ページの画像入力へ自動的に切り替え、必要に応じて JPEG 圧縮します。それでも 8 MB を超える場合は、ページ画像 DPI を下げて再実行してください。
+
 ### Docling
 
 CPU だけで Docling を実行する場合は、Docling 公式の案内に合わせて PyTorch CPU index を併用します。
 
 ```bash
-.venv/bin/pip install -e '.[docling]' --extra-index-url https://download.pytorch.org/whl/cpu
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[docling]' --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
 ```
 
 既定設定:
@@ -123,7 +221,7 @@ DOCLING_DO_TABLE_STRUCTURE=true
 CPU だけで実行する場合は、PaddleOCR の `onnxruntime` engine を使います。
 
 ```bash
-.venv/bin/pip install -e '.[pp-doclayout]'
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[pp-doclayout]'
 ```
 
 既定設定:
@@ -134,7 +232,7 @@ PP_DOCLAYOUT_ENGINE=onnxruntime
 PP_DOCLAYOUT_MODEL_SOURCE=BOS
 ```
 
-`PP_DOCLAYOUT_MODEL_SOURCE=BOS` は、Hugging Face に接続できない環境でも PaddleOCR 公式モデルを取得しやすくするための設定です。PaddlePaddle の `paddle_static` engine を使う場合は `.venv/bin/pip install -e '.[paddle]'` を実行し、`PP_DOCLAYOUT_ENGINE=paddle_static` に変更してください。
+`PP_DOCLAYOUT_MODEL_SOURCE=BOS` は、Hugging Face に接続できない環境でも PaddleOCR 公式モデルを取得しやすくするための設定です。PaddlePaddle の `paddle_static` engine を使う場合は `uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[paddle]'` を実行し、`PP_DOCLAYOUT_ENGINE=paddle_static` に変更してください。
 
 ### MinerU
 
@@ -143,7 +241,7 @@ MinerU は既存の JSON 出力取り込み、またはローカル CLI 実行�
 CPU 実行用に MinerU をインストールする場合:
 
 ```bash
-.venv/bin/pip install -e '.[mineru]'
+uv --cache-dir /tmp/uv-cache-pdf-layout-lab pip install --python .venv/bin/python -e '.[mineru]' --extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match
 ```
 
 この extra は `mineru[core]` を使います。`mineru[all]` は vLLM などの GPU/VLM 加速用依存も含むため、CPU だけで確認する場合は避けてください。
@@ -185,15 +283,15 @@ YOLOV10_MODEL_PATH=/path/to/yolov10x_best.pt
 ## 起動
 
 ```bash
-python app.py
+.venv/bin/python app.py
 ```
 
 既定では `http://127.0.0.1:7860` で起動します。
 
 ## 操作
 
-1. PDF ファイルをアップロードします。
-2. 解析するページ範囲を指定します。既定は `1` です。
+1. PDF または画像ファイルをアップロードします。
+2. 解析するページ範囲を指定します。既定は `1` です。画像ファイルは 1 ページとして扱います。
 3. 使用するエンジンを選択します。OCI Document Understanding の直後に MinerU / MinerU2.5-Pro が表示されます。
 4. `解析を実行` を押します。
 5. React ビューアでページとエンジンを切り替え、JSONL 行をクリックして bbox を確認します。
@@ -212,8 +310,8 @@ dots.mocr では公式 `prompt_layout_all_en` をそのまま使用します。�
 
 ## テスト
 
-外部エンジンに接続しない単体テストは標準ライブラリだけで実行できます。
+外部エンジンに接続しない単体テストは、プロジェクトの基本依存関係だけで実行できます。
 
 ```bash
-python3 -m unittest discover -s tests
+.venv/bin/python -m unittest discover -s tests
 ```

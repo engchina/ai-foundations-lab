@@ -188,6 +188,10 @@ input:focus-visible {
   min-height: var(--preview-pane-height);
 }
 
+.split-viewer.preview-only {
+  grid-template-columns: minmax(320px, 960px);
+}
+
 .pdf-pane {
   height: var(--preview-pane-height);
   overflow: auto;

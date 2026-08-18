@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from .adapters import ENGINE_LABELS, ENGINE_ORDER
-from .analysis import analyze_pdf, summarize_run
+from .analysis import analyze_pdf, preview_pdf, summarize_preview, summarize_run
+from .bootstrap import exec_project_venv_if_available
+from .rendering import SUPPORTED_SOURCE_FILE_TYPES
 from .settings import get_settings
 
 
@@ -22,6 +24,48 @@ DPI_PRESETS: list[tuple[str, int]] = [
     ("200 DPI - バランス", 200),
     ("300 DPI - OCR 標準（既定）", 300),
 ]
+
+PAGE_SYNC_HEAD = """
+<script>
+(() => {
+  if (window.__pdfLayoutLabPageSyncReady) return;
+  window.__pdfLayoutLabPageSyncReady = true;
+  window.__pdfLayoutLabSelectedPage = "1";
+
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin) return;
+    const data = event.data || {};
+    if (data.type !== "pdf-layout-lab:selected-page") return;
+
+    const page = String(data.page || "").trim();
+    if (/^[1-9]\\d*$/.test(page)) {
+      window.__pdfLayoutLabSelectedPage = page;
+    }
+  });
+})();
+</script>
+"""
+
+RUN_PAGE_SELECTION_JS = """
+(pdfFile, pageRange, selectedLabels, confidence, dpi) => {
+  const readViewerPageInput = () => {
+    const frames = Array.from(document.querySelectorAll('iframe[title="PDF / 画像レイアウト比較ビューア"]'));
+    for (const frame of frames) {
+      try {
+        const input = frame.contentDocument?.querySelector('input[aria-label="ページ番号"]');
+        const page = input?.value?.trim();
+        if (page) return page;
+      } catch (error) {
+        // Ignore cross-frame access failures and fall back to the posted page value.
+      }
+    }
+    return "";
+  };
+
+  const page = readViewerPageInput() || String(window.__pdfLayoutLabSelectedPage || pageRange || "1").trim() || "1";
+  return [pdfFile, page, selectedLabels, confidence, dpi];
+}
+"""
 
 APP_CSS = """
 .app-shell { max-width: 1680px; margin: 0 auto; }
@@ -68,14 +112,14 @@ def _preset_value_for_label(
 
 def _file_path(value: Any) -> str:
     if value is None:
-        raise ValueError("PDF ファイルをアップロードしてください。")
+        raise ValueError("PDF または画像ファイルをアップロードしてください。")
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
         return str(value.get("name") or value.get("path") or "")
     path = getattr(value, "name", None) or getattr(value, "path", None)
     if not path:
-        raise ValueError("PDF ファイルのパスを取得できませんでした。")
+        raise ValueError("PDF / 画像ファイルのパスを取得できませんでした。")
     return str(path)
 
 
@@ -105,11 +149,19 @@ def _viewer_frame(run_id: str, viewer_ready: bool) -> str:
         """
     return f"""
     <iframe
-      title="PDF レイアウト比較ビューア"
+      title="PDF / 画像レイアウト比較ビューア"
       src="/viewer/?run_id={run_id}"
       style="width: 100%; height: 86vh; border: 1px solid #d7dde5; border-radius: 8px; background: #fff;"
     ></iframe>
     """
+
+
+def _preview_placeholder_html() -> str:
+    return (
+        "<div style='padding: 16px; color: #475569;'>"
+        "PDF または画像をアップロードするとプレビューを表示します。"
+        "</div>"
+    )
 
 
 def _error_html(message: str) -> str:
@@ -135,18 +187,22 @@ def build_gradio_blocks(viewer_ready: bool):
     )
     default_dpi_preset = _preset_label_for_value(DPI_PRESETS, default_dpi)
 
-    with gr.Blocks(title="PDF レイアウト比較ラボ") as demo:
+    with gr.Blocks(title="PDF / 画像レイアウト比較ラボ") as demo:
         with gr.Column(elem_classes=["app-shell"]):
             gr.Markdown(
                 """
-                # PDF レイアウト比較ラボ
-                PDF を選択ページだけ解析し、技術ごとの差分を同じページ上の bbox で比較します。
+                # PDF / 画像レイアウト比較ラボ
+                PDF や画像を選択ページだけ解析し、技術ごとの差分を同じページ上の bbox で比較します。
                 """,
                 elem_classes=["main-title"],
             )
             with gr.Row():
                 with gr.Column(scale=1, min_width=320):
-                    pdf_file = gr.File(label="PDF ファイル", file_types=[".pdf"], type="filepath")
+                    pdf_file = gr.File(
+                        label="PDF / 画像ファイル",
+                        file_types=list(SUPPORTED_SOURCE_FILE_TYPES),
+                        type="filepath",
+                    )
                 with gr.Column(scale=2):
                     engines = gr.CheckboxGroup(
                         label="解析エンジン",
@@ -155,19 +211,12 @@ def build_gradio_blocks(viewer_ready: bool):
                     )
                     run_button = gr.Button("解析を実行", variant="primary")
                     summary = gr.Markdown("")
+            page_range = gr.Textbox(value="1", visible=False)
             with gr.Row(elem_classes=["settings-row"]):
-                with gr.Column(scale=1, min_width=220, elem_classes=["setting-card"]):
-                    page_range = gr.Number(
-                        label="解析ページ",
-                        value=1,
-                        minimum=1,
-                        step=1,
-                        precision=0,
-                    )
                 with gr.Column(scale=2, min_width=360, elem_classes=["setting-card"]):
                     gr.Markdown(
                         """
-                        **信頼度の下限**: 各解析エンジンが PDF 上で見つけたテキスト行、表、図、タイトルなどのレイアウト要素に付ける確信度です。0〜1 で表し、下限を上げると誤検出は減りますが、小さな文字や薄い罫線の検出漏れが増える場合があります。
+                        **信頼度の下限**: 各解析エンジンがファイル上で見つけたテキスト行、表、図、タイトルなどのレイアウト要素に付ける確信度です。0〜1 で表し、下限を上げると誤検出は減りますが、小さな文字や薄い罫線の検出漏れが増える場合があります。
                         """,
                         elem_classes=["setting-help"],
                     )
@@ -187,7 +236,7 @@ def build_gradio_blocks(viewer_ready: bool):
                 with gr.Column(scale=2, min_width=360, elem_classes=["setting-card"]):
                     gr.Markdown(
                         """
-                        **ページ画像 DPI**: PDF ページを画像化するときの解像度です。高いほど細部を読み取りやすくなりますが、解析時間、メモリ使用量、出力 PNG サイズも増えます。
+                        **ページ画像 DPI**: PDF ページを画像化するときの解像度です。画像アップロード時は元画像の解像度を使います。
                         """,
                         elem_classes=["setting-help"],
                     )
@@ -204,15 +253,31 @@ def build_gradio_blocks(viewer_ready: bool):
                         step=1,
                         value=default_dpi,
                     )
-            viewer = gr.HTML("<div style='padding: 16px; color: #475569;'>解析後に比較ビューアを表示します。</div>")
+            viewer = gr.HTML(_preview_placeholder_html())
+
+        def preview(pdf_file_value, dpi_value):
+            if not pdf_file_value:
+                return _preview_placeholder_html(), ""
+            try:
+                run_result = preview_pdf(
+                    pdf_path=_file_path(pdf_file_value),
+                    settings=get_settings(),
+                    dpi=int(dpi_value or settings.render_dpi),
+                )
+                return (
+                    _viewer_frame(run_result.run_id, viewer_ready),
+                    summarize_preview(run_result),
+                )
+            except Exception as exc:
+                return _error_html(str(exc)), f"### プレビューできませんでした\n\n{exc}"
 
         def run(pdf_file_value, page_range_value, selected_labels, confidence_value, dpi_value):
             try:
-                pdf_path = _file_path(pdf_file_value)
+                source_path = _file_path(pdf_file_value)
                 selected_labels = selected_labels or []
                 selected_engine_ids = [label_to_engine[label] for label in selected_labels if label in label_to_engine]
                 run_result = analyze_pdf(
-                    pdf_path=pdf_path,
+                    pdf_path=source_path,
                     page_range=_page_range_value(page_range_value),
                     engine_ids=selected_engine_ids,
                     settings=get_settings(),
@@ -258,10 +323,16 @@ def build_gradio_blocks(viewer_ready: bool):
             inputs=dpi,
             outputs=dpi_preset,
         )
+        pdf_file.change(
+            fn=preview,
+            inputs=[pdf_file, dpi],
+            outputs=[viewer, summary],
+        )
         run_button.click(
             fn=run,
             inputs=[pdf_file, page_range, engines, min_confidence, dpi],
             outputs=[viewer, summary],
+            js=RUN_PAGE_SELECTION_JS,
         )
     return demo
 
@@ -274,16 +345,18 @@ def create_app():
     settings = get_settings()
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     viewer_dist = Path(__file__).resolve().parent.parent / "viewer" / "dist"
-    app = FastAPI(title="PDF レイアウト比較ラボ")
+    app = FastAPI(title="PDF / 画像レイアウト比較ラボ")
     app.mount("/artifacts", StaticFiles(directory=str(settings.output_dir)), name="artifacts")
     viewer_ready = viewer_dist.exists()
     if viewer_ready:
         app.mount("/viewer", StaticFiles(directory=str(viewer_dist), html=True), name="viewer")
     blocks = build_gradio_blocks(viewer_ready)
-    return gr.mount_gradio_app(app, blocks, path="/", css=APP_CSS)
+    return gr.mount_gradio_app(app, blocks, path="/", css=APP_CSS, head=PAGE_SYNC_HEAD)
 
 
 def main() -> None:
+    exec_project_venv_if_available(Path(__file__).resolve().parent.parent)
+
     import uvicorn
 
     settings = get_settings()

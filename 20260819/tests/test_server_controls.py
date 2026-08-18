@@ -1,4 +1,5 @@
 import os
+import types
 import unittest
 from unittest.mock import patch
 
@@ -10,6 +11,7 @@ from pdf_layout_lab.server import (
     _preset_label_for_value,
     _preset_labels,
     _preset_value_for_label,
+    main,
 )
 from pdf_layout_lab.settings import get_settings
 
@@ -36,9 +38,33 @@ class ServerControlPresetTests(unittest.TestCase):
         self.assertEqual(_page_range_value(2.0), "2")
         self.assertEqual(_page_range_value(None), "")
 
+    def test_page_range_value_accepts_text_input(self):
+        self.assertEqual(_page_range_value(" 4 "), "4")
+
     def test_page_range_value_rejects_fractional_page(self):
         with self.assertRaises(ValueError):
             _page_range_value(1.5)
+
+    def test_main_prefers_project_venv_before_starting_server(self):
+        calls = []
+
+        def fake_exec(project_root):
+            calls.append(("exec", os.fspath(project_root)))
+
+        def fake_run(app, *, host, port):
+            calls.append(("run", app, host, port))
+
+        settings = types.SimpleNamespace(host="127.0.0.1", port=9999)
+        with (
+            patch("pdf_layout_lab.server.exec_project_venv_if_available", side_effect=fake_exec),
+            patch("pdf_layout_lab.server.get_settings", return_value=settings),
+            patch("pdf_layout_lab.server.create_app", return_value="app"),
+            patch("uvicorn.run", side_effect=fake_run),
+        ):
+            main()
+
+        self.assertEqual(calls[0][0], "exec")
+        self.assertEqual(calls[1], ("run", "app", "127.0.0.1", 9999))
 
 
 if __name__ == "__main__":

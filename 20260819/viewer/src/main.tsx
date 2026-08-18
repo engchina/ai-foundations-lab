@@ -50,6 +50,20 @@ function trimText(value: string, maxLength = 5000): string {
   return `${normalized.slice(0, maxLength - 1)}…`;
 }
 
+function notifySelectedPage(page: string, runId: string | null) {
+  const normalizedPage = page.trim();
+  if (!/^[1-9]\d*$/.test(normalizedPage) || window.parent === window) return;
+
+  window.parent.postMessage(
+    {
+      type: "pdf-layout-lab:selected-page",
+      run_id: runId,
+      page: normalizedPage,
+    },
+    window.location.origin,
+  );
+}
+
 function formatEngineLabel(engine: EngineStatus): string {
   const state = engine.available ? "有効" : "無効";
   return `${engine.label}: ${state} / ${engine.count} 件`;
@@ -117,6 +131,10 @@ function App() {
     if (!selectedStillVisible) setSelectedId("");
   }, [data, pageNumber, selectedEngine, selectedId]);
 
+  React.useEffect(() => {
+    notifySelectedPage(goToPage || String(pageNumber), runId);
+  }, [goToPage, pageNumber, runId]);
+
   function changePage(nextPage: number) {
     if (!data) return;
     const pages = data.pages.map((item) => item.page);
@@ -163,6 +181,7 @@ function App() {
   const pageIndex = data.pages.findIndex((item) => item.page === page.page);
   const previousPage = data.pages[Math.max(0, pageIndex - 1)]?.page ?? page.page;
   const nextPage = data.pages[Math.min(data.pages.length - 1, pageIndex + 1)]?.page ?? page.page;
+  const isPreviewOnly = data.engines.length === 0;
 
   return (
     <main className="jsonl-shell">
@@ -171,16 +190,18 @@ function App() {
           <p>Run ID: {data.run_id}</p>
           <h1>{data.pdf_name}</h1>
         </div>
-        <nav className="download-actions" aria-label="ダウンロード">
-          <a href={`/artifacts/${data.run_id}/results.json`} download>
-            <Download aria-hidden="true" />
-            JSON
-          </a>
-          <a href={`/artifacts/${data.run_id}/results.jsonl`} download>
-            <Download aria-hidden="true" />
-            JSONL
-          </a>
-        </nav>
+        {!isPreviewOnly && (
+          <nav className="download-actions" aria-label="ダウンロード">
+            <a href={`/artifacts/${data.run_id}/results.json`} download>
+              <Download aria-hidden="true" />
+              JSON
+            </a>
+            <a href={`/artifacts/${data.run_id}/results.jsonl`} download>
+              <Download aria-hidden="true" />
+              JSONL
+            </a>
+          </nav>
+        )}
       </header>
 
       <section className="jsonl-controls" aria-label="ページ操作">
@@ -216,34 +237,45 @@ function App() {
         </button>
       </section>
 
-      <section className="engine-strip" aria-label="解析エンジン">
-        {data.engines.map((engine) => (
-          <button
-            key={engine.engine}
-            type="button"
-            className={engine.engine === selectedEngine ? "active-engine" : ""}
-            onClick={() => changeEngine(engine.engine)}
-            title={engine.message}
-          >
-            <span>{formatEngineLabel(engine)}</span>
-          </button>
-        ))}
-      </section>
+      {isPreviewOnly ? (
+        <p className="engine-message">
+          解析前プレビューです。アップロードしたファイルの全 {data.pages.length} ページを表示できます。
+        </p>
+      ) : (
+        <section className="engine-strip" aria-label="解析エンジン">
+          {data.engines.map((engine) => (
+            <button
+              key={engine.engine}
+              type="button"
+              className={engine.engine === selectedEngine ? "active-engine" : ""}
+              onClick={() => changeEngine(engine.engine)}
+              title={engine.message}
+            >
+              <span>{formatEngineLabel(engine)}</span>
+            </button>
+          ))}
+        </section>
+      )}
 
-      {currentEngine && (
+      {!isPreviewOnly && currentEngine && (
         <p className={currentEngine.available ? "engine-message" : "engine-message warning-message"}>
           {currentEngine.label}: {currentEngine.message}
         </p>
       )}
 
-      <section className="split-viewer" aria-label="PDF と JSONL">
+      <section
+        className={isPreviewOnly ? "split-viewer preview-only" : "split-viewer"}
+        aria-label={isPreviewOnly ? "ファイルプレビュー" : "ファイルと JSONL"}
+      >
         <PDFPane page={page} selectedRecord={selectedRecord} onClear={() => setSelectedId("")} />
-        <JSONLTable
-          records={pageRecords}
-          selectedId={selectedId}
-          onSelect={selectRecord}
-          scrollRef={tableRef}
-        />
+        {!isPreviewOnly && (
+          <JSONLTable
+            records={pageRecords}
+            selectedId={selectedId}
+            onSelect={selectRecord}
+            scrollRef={tableRef}
+          />
+        )}
       </section>
     </main>
   );
