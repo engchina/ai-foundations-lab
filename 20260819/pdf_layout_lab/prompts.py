@@ -22,3 +22,11 @@ PROMPT_LAYOUT_ALL_EN = """Please output the layout information from the PDF imag
     - All layout elements must be sorted according to human reading order.
 5. Final Output: The entire output must be a single JSON object.
 """
+
+# Picture 切り出し画像から Mermaid を生成する独自プロンプト（dots.mocr 公式ではない）
+PROMPT_PICTURE_MERMAID = """Convert this image into a Mermaid flowchart that reproduces its structure (boxes, callouts, arrows, reading order).
+Rules:
+- Output only one ```mermaid code block, starting with `graph TD`.
+- Node labels must be the original text from the image, no translation.
+- If the image is not a diagram, flowchart, screen flow, or process (for example a photo, logo, or decoration), output exactly NONE.
+"""

@@ -19,7 +19,7 @@ from typing import Any
 from pdf_layout_lab import model_pool
 from pdf_layout_lab.categories import normalize_category
 from pdf_layout_lab.coordinates import clamp_bbox
-from pdf_layout_lab.prompts import PROMPT_LAYOUT_ALL_EN
+from pdf_layout_lab.prompts import PROMPT_LAYOUT_ALL_EN, PROMPT_PICTURE_MERMAID
 from pdf_layout_lab.schemas import LayoutRecord
 from pdf_layout_lab.settings import Settings
 
@@ -37,6 +37,13 @@ _FLASH_ATTN_IMPORT_ERROR = (
 PICTURE_OCR_MAX_PER_PAGE = 8
 PICTURE_OCR_PADDING = 8
 PICTURE_OCR_MIN_SIDE = 32
+# 図でない画像だと延々と捏造を続けるので Mermaid 生成は短めに打ち切る
+PICTURE_MERMAID_MAX_NEW_TOKENS = 1024
+PICTURE_MERMAID_MIN_EDGES = 2
+PICTURE_MERMAID_MIN_UNIQUE_LABEL_RATIO = 0.6
+_MERMAID_STYLE_LINE = re.compile(r"^\s*(style|linkStyle|classDef|class)\b")
+# 開き括弧と同じ種類の閉じ括弧までをラベルとみなす（"終了 (完了)" のような括弧入りラベルを壊さない）
+_MERMAID_NODE_LABEL = re.compile(r'([A-Za-z_][\w-]*)(?:\[([^\]"]+)\]|\(([^\)"]+)\)|\{([^\}"]+)\})')
 
 
 def _save_picture_crop(page_picture, record: LayoutRecord, crop_dir: Path) -> Path | None:
@@ -65,6 +72,36 @@ def _texts_from_layout_response(response_text: str) -> str:
     elements = coerce_layout_elements(payload)
     texts = [str(element.get("text") or element.get("content") or "").strip() for element in elements]
     return "\n".join(text for text in texts if text)
+
+
+def _mermaid_from_response(response_text: str) -> str:
+    """Mermaid 生成の応答を検証・整形し、```mermaid フェンス付きで返す。図でない画像への捏造は空文字にする。
+
+    dots.mocr は NONE を返さず、QR コードや印鑑でも同じラベルを繰り返すグラフや style 行の羅列を
+    生成するため、辺の数とラベルの重複率で足切りする。
+    """
+    body = re.sub(r"^\s*```(?:mermaid)?\s*|\s*```\s*$", "", response_text.strip())
+    if not re.match(r"\s*(graph|flowchart)\b", body):
+        return ""
+    lines = [line for line in body.splitlines() if line.strip() and not _MERMAID_STYLE_LINE.match(line)]
+    edges = [line for line in lines if "-->" in line]
+    labels = [_mermaid_label(match) for match in _MERMAID_NODE_LABEL.finditer("\n".join(lines))]
+    if len(edges) < PICTURE_MERMAID_MIN_EDGES or not labels:
+        return ""
+    if len(set(labels)) < PICTURE_MERMAID_MIN_UNIQUE_LABEL_RATIO * len(labels):
+        return ""
+    # ラベル内の括弧やパイプで Mermaid の構文が壊れないよう引用符で包む
+    quoted = "\n".join(_MERMAID_NODE_LABEL.sub(_quote_mermaid_label, line) for line in lines)
+    return f"```mermaid\n{quoted}\n```"
+
+
+def _mermaid_label(match: re.Match) -> str:
+    return next(group for group in match.groups()[1:] if group is not None).strip()
+
+
+def _quote_mermaid_label(match: re.Match) -> str:
+    opener, closer = {2: "[]", 3: "()", 4: "{}"}[match.lastindex]
+    return f'{match.group(1)}{opener}"{_mermaid_label(match)}"{closer}'
 
 
 class DotsMocrAdapter:
@@ -166,14 +203,22 @@ class DotsMocrAdapter:
             if not crop_path:
                 continue
             text = _texts_from_layout_response(self._infer(crop_path, PROMPT_LAYOUT_ALL_EN, backend, context))
-            if text:
-                record.text = text
-                record.raw["picture_ocr"] = True
+            if not text:
+                continue
+            record.text = text
+            record.raw["picture_ocr"] = True
+            # 文字のある図だけ Mermaid 化を試み、通れば本文を置き換える（OCR 本文は raw に残す）
+            mermaid = _mermaid_from_response(
+                self._infer(crop_path, PROMPT_PICTURE_MERMAID, backend, context, max_new_tokens=PICTURE_MERMAID_MAX_NEW_TOKENS)
+            )
+            if mermaid:
+                record.raw["picture_text"] = text
+                record.text = mermaid
 
-    def _infer(self, image_path: Path, prompt: str, backend: str, context: AnalysisContext) -> str:
+    def _infer(self, image_path: Path, prompt: str, backend: str, context: AnalysisContext, max_new_tokens: int | None = None) -> str:
         if backend in API_BACKENDS:
-            return self._call_vllm(image_path, prompt)
-        return self._call_transformers(image_path, prompt, context)
+            return self._call_vllm(image_path, prompt, max_new_tokens)
+        return self._call_transformers(image_path, prompt, context, max_new_tokens)
 
     def preload(self) -> None:
         """モデルを事前にロードして常駐させる（UI の「ロード」ボタン用）。"""
@@ -181,12 +226,12 @@ class DotsMocrAdapter:
             _prepare_runtime_env(self.settings)
             _get_local_runtime(self.settings)
 
-    def _call_transformers(self, image_path: Path, prompt: str, context: AnalysisContext) -> str:
+    def _call_transformers(self, image_path: Path, prompt: str, context: AnalysisContext, max_new_tokens: int | None = None) -> str:
         _prepare_runtime_env(context.settings)
         runtime = _get_local_runtime(self.settings)
-        return runtime.infer(image_path, prompt, self.settings.dots_mocr_max_new_tokens)
+        return runtime.infer(image_path, prompt, max_new_tokens or self.settings.dots_mocr_max_new_tokens)
 
-    def _call_vllm(self, image_path: Path, prompt: str) -> str:
+    def _call_vllm(self, image_path: Path, prompt: str, max_new_tokens: int | None = None) -> str:
         image_bytes = image_path.read_bytes()
         encoded = base64.b64encode(image_bytes).decode("ascii")
         payload = {
@@ -205,6 +250,8 @@ class DotsMocrAdapter:
             ],
             "temperature": 0,
         }
+        if max_new_tokens:
+            payload["max_tokens"] = max_new_tokens
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             url=f"{self.settings.dots_mocr_base_url.rstrip('/')}/chat/completions",

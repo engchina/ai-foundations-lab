@@ -391,8 +391,10 @@ class DotsMocrPictureOcrTests(unittest.TestCase):
             adapter = DotsMocrAdapter(settings)
             prompts = []
 
-            def fake_infer(path, prompt, backend, context):
+            def fake_infer(path, prompt, backend, context, max_new_tokens=None):
                 prompts.append(prompt)
+                if "Mermaid" in prompt:
+                    return "graph TD\n    A[開始] --> B[計画員]\n    B --> C[終了 (完了)]"
                 return '{"elements": [{"bbox": [0, 0, 10, 10], "category": "Text", "text": "開始"}, {"bbox": [0, 20, 10, 30], "category": "Text", "text": "計画員"}]}'
 
             adapter._infer = fake_infer
@@ -406,11 +408,32 @@ class DotsMocrPictureOcrTests(unittest.TestCase):
                 min_confidence=0.5,
             ))
 
-        self.assertEqual(picture.text, "開始\n計画員")
+        self.assertEqual(picture.text, '```mermaid\ngraph TD\n    A["開始"] --> B["計画員"]\n    B --> C["終了 (完了)"]\n```')
+        self.assertEqual(picture.raw.get("picture_text"), "開始\n計画員")
         self.assertTrue(picture.raw.get("picture_ocr"))
         self.assertEqual(filled.text, "既にテキストがある")
-        self.assertEqual(len(prompts), 1)
+        self.assertEqual(len(prompts), 2)
         self.assertIn("Layout Categories", prompts[0])
+        self.assertIn("Mermaid", prompts[1])
+
+
+class DotsMocrMermaidResponseTests(unittest.TestCase):
+    def test_rejects_repeated_labels_and_none(self):
+        from pdf_layout_lab.adapters.dots_mocr import _mermaid_from_response
+
+        self.assertEqual(_mermaid_from_response("NONE"), "")
+        # QR コードや印鑑では同じラベルを繰り返す
+        self.assertEqual(_mermaid_from_response("graph TD\n" + "\n".join(f"A --> B{i}[矩形]" for i in range(6))), "")
+        self.assertEqual(_mermaid_from_response("graph TD\n    A[開始] --> B[終了]\n    style A fill:#fff"), "")  # 辺が 1 本だけ
+
+    def test_strips_fence_and_style_lines(self):
+        from pdf_layout_lab.adapters.dots_mocr import _mermaid_from_response
+
+        response = "```mermaid\ngraph TD\n    A[外国送金] --> B(送金依頼)\n    B --> C[履歴照会 | 選択]\n    linkStyle 0 stroke:#E61C1C\n```"
+        self.assertEqual(
+            _mermaid_from_response(response),
+            '```mermaid\ngraph TD\n    A["外国送金"] --> B("送金依頼")\n    B --> C["履歴照会 | 選択"]\n```',
+        )
 
 
 class DotsMocrPictureResponseTests(unittest.TestCase):

@@ -247,6 +247,21 @@ input:focus-visible {
   background: #f8fafc;
 }
 
+.mermaid-preview {
+  overflow-x: auto;
+  margin-bottom: 6px;
+}
+
+.mermaid-preview svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid-error {
+  color: #b91c1c;
+  font-size: 12px;
+}
+
 /* 元の内容の次の行に、表示切り替えの 2 リンクを並べる */
 .cell-tools {
   display: flex;

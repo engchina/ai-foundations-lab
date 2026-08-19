@@ -1,7 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { ChevronLeft, ChevronRight, Download, RefreshCw, RotateCcw, RotateCw } from "lucide-react";
+import mermaid from "mermaid";
 import "./styles.css";
+
+mermaid.initialize({ startOnLoad: false, securityLevel: "strict", suppressErrorRendering: true });
 
 type PageImage = {
   page: number;
@@ -99,6 +102,50 @@ function renderHtmlTable(html: string): React.ReactNode {
 
   return toElement(table);
 }
+
+// MinerU / dots.mocr は図を ```mermaid フェンス付きで返す
+const MERMAID_FENCE = /^\s*```mermaid\s*\n([\s\S]*?)\n?\s*```\s*$/i;
+
+function mermaidSource(text: string): string | null {
+  const match = MERMAID_FENCE.exec(text || "");
+  return match ? match[1] : null;
+}
+
+function MermaidPreview({ id, source }: { id: string; source: string }) {
+  const [svg, setSvg] = React.useState("");
+  const [error, setError] = React.useState("");
+  React.useEffect(() => {
+    let cancelled = false;
+    setSvg("");
+    setError("");
+    mermaid
+      .render(`mermaid-${id.replace(/[^\w-]/g, "_")}`, source)
+      .then((result) => {
+        if (!cancelled) setSvg(result.svg);
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, source]);
+  if (error) return <div className="mermaid-error">Mermaid を描画できません: {error}</div>;
+  // mermaid が生成した SVG をそのまま挿入する（securityLevel: strict でラベルはサニタイズ済み）
+  return <div className="mermaid-preview" dangerouslySetInnerHTML={{ __html: svg }} />;
+}
+
+// 表 (HTML) と図 (Mermaid) は「描画」と「元の文字列」を 2 つのリンクで切り替える
+function previewKind(text: string): "table" | "mermaid" | null {
+  if (isHtmlTable(text)) return "table";
+  if (mermaidSource(text) !== null) return "mermaid";
+  return null;
+}
+
+const PREVIEW_LABELS = {
+  table: { rendered: "テーブルを表示", raw: "HTML を表示" },
+  mermaid: { rendered: "図を表示", raw: "Mermaid を表示" },
+} as const;
 
 function formatEngineLabel(engine: EngineStatus): string {
   const state = engine.available ? "有効" : "無効";
@@ -428,12 +475,14 @@ function JSONLTable(props: {
                 <td>{record.page}</td>
                 <td>{record.seq_no}</td>
                 <td className="sentence-cell">
-                  {isHtmlTable(record.text) && !rawIds[record.id] ? (
+                  {previewKind(record.text) === "table" && !rawIds[record.id] ? (
                     <div className="html-table-preview">{renderHtmlTable(record.text)}</div>
+                  ) : previewKind(record.text) === "mermaid" && !rawIds[record.id] ? (
+                    <MermaidPreview id={record.id} source={mermaidSource(record.text) || ""} />
                   ) : (
                     trimText(record.text || record.raw_type || "")
                   )}
-                  {isHtmlTable(record.text) && (
+                  {previewKind(record.text) && (
                     <div className="cell-tools">
                       <button
                         type="button"
@@ -444,7 +493,7 @@ function JSONLTable(props: {
                           setRawIds((prev) => ({ ...prev, [record.id]: false }));
                         }}
                       >
-                        テーブルを表示
+                        {PREVIEW_LABELS[previewKind(record.text)!].rendered}
                       </button>
                       <button
                         type="button"
@@ -455,7 +504,7 @@ function JSONLTable(props: {
                           setRawIds((prev) => ({ ...prev, [record.id]: true }));
                         }}
                       >
-                        HTML を表示
+                        {PREVIEW_LABELS[previewKind(record.text)!].raw}
                       </button>
                     </div>
                   )}

@@ -368,6 +368,8 @@ dots.mocr では公式 `prompt_layout_all_en` をそのまま使用します。�
 
 公式プロンプトは `Picture` カテゴリの text を出力しない仕様のため、text が空の Picture については、その領域を切り出して同じ `prompt_layout_all_en` で再解析し、要素ごとの text を読み順に連結して埋めます（1 ページあたり 8 枚まで）。切り出し画像は `.runs/<run_id>/dots_mocr/` に保存します。
 
+さらに、文字が取れた Picture には Mermaid 生成プロンプト（`PROMPT_PICTURE_MERMAID`）を追加で 1 回投げ、フローチャートや画面遷移図なら ```` ```mermaid ```` フェンス付きの `graph TD` を text に入れます（OCR 本文は `raw.picture_text` に残します）。dots.mocr は図でない画像（QR コード・印鑑など）でも NONE を返さず捏造するため、辺が 2 本未満、またはノードラベルの重複が多い応答は捨てて OCR 本文のままにします。ビューアは ```` ```mermaid ```` を含む行を図として描画し、表の HTML と同じく「図を表示 / Mermaid を表示」のリンクで切り替えられます（MinerU の Mermaid 出力も同様に描画します）。
+
 公式 `prompt_ocr` は図の見出しだけを返すことがあり、`prompt_grounding_ocr` は bbox の座標系が processor 側の resize と一致せず別領域を読むため、この用途では使用していません。
 
 ## 出力
