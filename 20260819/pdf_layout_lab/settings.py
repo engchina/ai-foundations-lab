@@ -99,7 +99,7 @@ def get_settings() -> Settings:
         dots_mocr_base_url=os.environ.get("DOTS_MOCR_BASE_URL", "http://127.0.0.1:8000/v1"),
         dots_mocr_model=os.environ.get("DOTS_MOCR_MODEL", "rednote-hilab/dots.mocr"),
         dots_mocr_api_key=os.environ.get("DOTS_MOCR_API_KEY", ""),
-        dots_mocr_timeout_seconds=_env_float("DOTS_MOCR_TIMEOUT_SECONDS", 120.0),
+        dots_mocr_timeout_seconds=_env_float("DOTS_MOCR_TIMEOUT_SECONDS", 300.0),
         dots_mocr_device=os.environ.get("DOTS_MOCR_DEVICE", "auto"),
         dots_mocr_device_map=os.environ.get("DOTS_MOCR_DEVICE_MAP", ""),
         dots_mocr_torch_dtype=os.environ.get("DOTS_MOCR_TORCH_DTYPE", "auto"),

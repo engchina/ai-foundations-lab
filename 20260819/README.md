@@ -203,7 +203,7 @@ vLLM / SGLang などの OpenAI 互換サーバー上の dots.mocr は、エン�
 DOTS_MOCR_BASE_URL=http://127.0.0.1:8000/v1
 DOTS_MOCR_API_KEY=
 DOTS_MOCR_MODEL=rednote-hilab/dots.mocr
-DOTS_MOCR_TIMEOUT_SECONDS=120
+DOTS_MOCR_TIMEOUT_SECONDS=300
 ```
 
 ローカル版の dots.mocr 自体も API で動かしたい場合だけ `DOTS_MOCR_BACKEND=api` にします。
