@@ -47,7 +47,7 @@ class UnstructuredAdapter:
             strategy="hi_res",
             infer_table_structure=True,
             include_page_breaks=False,
-            languages=["jpn", "eng", "chi_sim"],
+            languages=self.settings.unstructured_ocr_languages,  # Tesseract は先頭を主モデルにするので順序が効く
         )
         page_lookup = {page.page: page for page in context.pages}
         counters: dict[int, int] = {}
@@ -62,8 +62,12 @@ class UnstructuredAdapter:
             points = getattr(coords, "points", None)
             if not points:
                 continue
-            xs = [float(point[0]) for point in points]
-            ys = [float(point[1]) for point in points]
+            # Unstructured は自前の DPI で描画した PixelSpace の座標を返すので、こちらのページ画像サイズへ合わせる
+            system = getattr(coords, "system", None)
+            x_scale = page.width / float(getattr(system, "width", 0) or page.width)
+            y_scale = page.height / float(getattr(system, "height", 0) or page.height)
+            xs = [float(point[0]) * x_scale for point in points]
+            ys = [float(point[1]) * y_scale for point in points]
             counters[page_number] = counters.get(page_number, 0) + 1
             confidence = _optional_float(getattr(element, "detection_score", None))
             if confidence is not None and confidence < context.min_confidence:

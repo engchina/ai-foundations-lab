@@ -63,6 +63,7 @@ class Settings:
     oci_profile: str
     oci_compartment_id: str
     oci_document_language: str
+    unstructured_ocr_languages: list[str]
     docling_device: str
     docling_num_threads: int
     docling_do_ocr: bool
@@ -77,13 +78,14 @@ class Settings:
     mineru_backend: str
     mineru_method: str
     mineru_extra_args: str
+    mineru_api_url: str
 
 
 def get_settings() -> Settings:
     load_dotenv()
     enabled = os.environ.get(
         "PDF_LAYOUT_LAB_ENABLED_ENGINES",
-        "oci,mineru,dots_mocr,unstructured,docling,pymupdf,yolov10,pp_doclayout_v3",
+        "oci,mineru,mineru_api,dots_mocr,unstructured,docling,pymupdf,yolov10,pp_doclayout_v3",
     )
     enabled_engines = [part.strip() for part in enabled.split(",") if part.strip()]
     return Settings(
@@ -107,6 +109,7 @@ def get_settings() -> Settings:
         oci_profile=os.environ.get("OCI_PROFILE", "DEFAULT"),
         oci_compartment_id=os.environ.get("OCI_COMPARTMENT_ID", ""),
         oci_document_language=os.environ.get("OCI_DOCUMENT_LANGUAGE", "auto"),
+        unstructured_ocr_languages=[part.strip() for part in os.environ.get("UNSTRUCTURED_OCR_LANGUAGES", "jpn,eng,chi_sim").split(",") if part.strip()],
         docling_device=os.environ.get("DOCLING_DEVICE", "cpu"),
         docling_num_threads=_env_int("DOCLING_NUM_THREADS", _env_int("OMP_NUM_THREADS", 4)),
         docling_do_ocr=_env_bool("DOCLING_DO_OCR", True),
@@ -121,4 +124,5 @@ def get_settings() -> Settings:
         mineru_backend=os.environ.get("MINERU_BACKEND", "pipeline"),
         mineru_method=os.environ.get("MINERU_METHOD", "auto"),
         mineru_extra_args=os.environ.get("MINERU_EXTRA_ARGS", ""),
+        mineru_api_url=os.environ.get("MINERU_API_URL", "").strip(),
     )

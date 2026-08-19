@@ -254,7 +254,7 @@ def _block_to_record(
     raw_type = str(_first_present(block, "type", "category", "block_type", "label") or "")
     text = _extract_block_text(block)
     return LayoutRecord(
-        id=f"mineru-p{page_number}-{seq}",
+        id=f"{engine_id}-p{page_number}-{seq}",
         engine=engine_id,
         page=page_number,
         seq_no=seq,
@@ -284,7 +284,12 @@ def _blocks_from_page_payload(page_payload: dict[str, Any]) -> list[Any]:
         or page_payload.get("items")
         or []
     )
-    return blocks if isinstance(blocks, list) else []
+    blocks = list(blocks) if isinstance(blocks, list) else []
+    # ヘッダー / フッター / 欄外注記は discarded_blocks に入る（他エンジンの Page-header/footer に相当）
+    discarded = page_payload.get("discarded_blocks")
+    if isinstance(discarded, list):
+        blocks.extend(discarded)
+    return blocks
 
 
 def _page_number_from_payload(payload: Any, fallback: int) -> int:

@@ -224,6 +224,14 @@ OCI_DOCUMENT_LANGUAGE=auto
 
 OCI Document Understanding の同期入力は 5 ページ以下、かつ 8 MB 以下です。画像アップロードやスキャン PDF では、一時 PDF が元画像より大きくなる場合があります。その場合、アプリは単一ページの画像入力へ自動的に切り替え、必要に応じて JPEG 圧縮します。それでも 8 MB を超える場合は、ページ画像 DPI を下げて再実行してください。
 
+### Unstructured
+
+hi_res 戦略の OCR は Tesseract で、言語は `UNSTRUCTURED_OCR_LANGUAGES`（カンマ区切り、既定 `jpn,eng,chi_sim`）で指定します。Tesseract は先頭の言語を主モデルにするため順序が結果に影響します。中国語資料が中心なら `chi_sim,jpn,eng` のように並べ替えてください（`tesseract --list-langs` に無い言語は指定できません）。手書き文字は Tesseract の対象外なので、言語を変えても改善しません。
+
+```bash
+UNSTRUCTURED_OCR_LANGUAGES=jpn,eng,chi_sim
+```
+
 ### Docling
 
 CPU だけで Docling を実行する場合は、Docling 公式の案内に合わせて PyTorch CPU index を併用します。
@@ -287,6 +295,12 @@ CLI を実行する場合:
 ```bash
 MINERU_COMMAND=auto
 MINERU_BACKEND=pipeline
+```
+
+mineru-api サーバー（`mineru-api --host 0.0.0.0 --port 8000`）を使う場合は、エンジン「MinerU / MinerU2.5-Pro (API)」を選び、URL を指定します。`POST /file_parse` を `backend=hybrid-engine` / `effort=high` で同期呼び出しし、`middle_json` の bbox を取り込みます。
+
+```bash
+MINERU_API_URL=http://127.0.0.1:8887
 ```
 
 `MINERU_COMMAND=auto` の場合は、`.venv/bin/mineru`、`mineru`、`.venv/bin/magic-pdf`、`magic-pdf` の順に検出します。旧 `magic-pdf` CLI を使う場合は `MINERU_METHOD=auto` を `-m auto` として渡します。追加オプションが必要な場合は `MINERU_EXTRA_ARGS` に指定してください。

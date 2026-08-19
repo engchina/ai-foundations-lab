@@ -6,6 +6,7 @@ from .base import LayoutAdapter
 from .docling_adapter import DoclingAdapter
 from .dots_mocr import DotsMocrAdapter
 from .mineru import MineruAdapter
+from .mineru_api import MineruApiAdapter
 from .oci_document import OciDocumentAdapter
 from .pp_doclayout_v3 import PpDocLayoutV3Adapter
 from .pymupdf_adapter import PyMuPdfAdapter
@@ -15,6 +16,7 @@ from .yolov10_adapter import YoloV10Adapter
 ENGINE_ORDER = [
     "oci",
     "mineru",
+    "mineru_api",
     "dots_mocr",
     "unstructured",
     "docling",
@@ -30,6 +32,7 @@ ENGINE_LABELS = {
     "docling": "Docling",
     "pp_doclayout_v3": "PP-DocLayoutV3",
     "mineru": "MinerU / MinerU2.5-Pro",
+    "mineru_api": "MinerU / MinerU2.5-Pro (API)",
     "pymupdf": "PyMuPDF",
     "yolov10": "YOLOv10 DocLayNet",
 }
@@ -39,6 +42,7 @@ def build_adapters(settings: Settings) -> dict[str, LayoutAdapter]:
     adapters: dict[str, LayoutAdapter] = {
         "oci": OciDocumentAdapter(settings),
         "mineru": MineruAdapter(settings),
+        "mineru_api": MineruApiAdapter(settings),
         "dots_mocr": DotsMocrAdapter(settings),
         "unstructured": UnstructuredAdapter(settings),
         "docling": DoclingAdapter(settings),
