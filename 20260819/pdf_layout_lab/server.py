@@ -288,7 +288,7 @@ def build_gradio_blocks(viewer_ready: bool):
                             """
                             **信頼度の下限**: 各解析エンジンがファイル上で見つけたテキスト行、表、図、タイトルなどのレイアウト要素に付ける確信度です。0〜1 で表し、下限を上げると誤検出は減りますが、小さな文字や薄い罫線の検出漏れが増える場合があります。
 
-                            対象エンジン: OCI Document Understanding / dots.mocr / Unstructured / PP-DocLayoutV3 / MinerU / YOLOv10 DocLayNet（YOLOv10 は 0.2 未満に下げても 0.2 で解析）。Docling / PyMuPDF は確信度を返さないため影響しません。
+                            対象エンジン: OCI Document Understanding / dots.mocr / dots.mocr (API) / Unstructured / PP-DocLayoutV3 / MinerU / YOLOv10 DocLayNet（YOLOv10 は 0.2 未満に下げても 0.2 で解析）。Docling / PyMuPDF / MinerU (API) は確信度を返さないため影響しません。
                             """,
                             elem_classes=["setting-help"],
                         )
@@ -310,7 +310,7 @@ def build_gradio_blocks(viewer_ready: bool):
                             """
                             **ページ画像 DPI**: PDF ページを画像化するときの解像度です。画像アップロード時は元画像の解像度を使います。
 
-                            対象エンジン: dots.mocr / PP-DocLayoutV3 / YOLOv10 DocLayNet（ページ画像を入力にする）。Unstructured / Docling / MinerU / PyMuPDF は PDF を直接読み込み各自の解像度で処理するため影響しません。OCI Document Understanding は PDF を送り、サイズ上限を超えたときだけページ画像を使います。
+                            対象エンジン: dots.mocr / dots.mocr (API) / PP-DocLayoutV3 / YOLOv10 DocLayNet（ページ画像を入力にする）。Unstructured / Docling / MinerU / MinerU (API) / PyMuPDF は PDF を直接読み込み各自の解像度で処理するため影響しません。OCI Document Understanding は PDF を送り、サイズ上限を超えたときだけページ画像を使います。
                             """,
                             elem_classes=["setting-help"],
                         )

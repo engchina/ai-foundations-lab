@@ -197,13 +197,16 @@ DOTS_MOCR_MAX_NEW_TOKENS=24000
 
 `DOTS_MOCR_ATTN_IMPLEMENTATION=auto` では、CUDA と `flash_attn` が利用できる場合だけモデル既定の flash attention を使い、それ以外は `sdpa` に切り替えます。`flash_attention_2` を明示する場合は、実行環境に合う `flash_attn` を別途インストールしてください。
 
-すでに同じマシンで vLLM / SGLang などの OpenAI 互換サーバーを起動している場合だけ、API モードに切り替えます。
+vLLM / SGLang などの OpenAI 互換サーバー上の dots.mocr は、エンジン「dots.mocr (API)」として選べます（ローカル版と並べて比較できます）。URL・API キー・モデル名は次で指定します。
 
 ```bash
-DOTS_MOCR_BACKEND=api
 DOTS_MOCR_BASE_URL=http://127.0.0.1:8000/v1
+DOTS_MOCR_API_KEY=
 DOTS_MOCR_MODEL=rednote-hilab/dots.mocr
+DOTS_MOCR_TIMEOUT_SECONDS=120
 ```
+
+ローカル版の dots.mocr 自体も API で動かしたい場合だけ `DOTS_MOCR_BACKEND=api` にします。
 
 ### OCI Document Understanding
 
@@ -368,7 +371,7 @@ dots.mocr では公式 `prompt_layout_all_en` をそのまま使用します。�
 
 公式プロンプトは `Picture` カテゴリの text を出力しない仕様のため、text が空の Picture については、その領域を切り出して同じ `prompt_layout_all_en` で再解析し、要素ごとの text を読み順に連結して埋めます（1 ページあたり 8 枚まで）。切り出し画像は `.runs/<run_id>/dots_mocr/` に保存します。
 
-さらに、文字が取れた Picture には Mermaid 生成プロンプト（`PROMPT_PICTURE_MERMAID`）を追加で 1 回投げ、フローチャートや画面遷移図なら ```` ```mermaid ```` フェンス付きの `graph TD` を text に入れます（OCR 本文は `raw.picture_text` に残します）。dots.mocr は図でない画像（QR コード・印鑑など）でも NONE を返さず捏造するため、辺が 2 本未満、またはノードラベルの重複が多い応答は捨てて OCR 本文のままにします。ビューアは ```` ```mermaid ```` を含む行を図として描画し、表の HTML と同じく「図を表示 / Mermaid を表示」のリンクで切り替えられます（MinerU の Mermaid 出力も同様に描画します）。
+さらに、文字が取れた Picture には分類プロンプト（`PROMPT_PICTURE_KIND`: flowchart / table / chart / screenshot / photo / logo / other）を投げ、結果を `raw.picture_kind` に記録します。**flowchart と判定された画像だけ** Mermaid 生成プロンプト（`PROMPT_PICTURE_MERMAID`）を追加で 1 回投げ、```` ```mermaid ```` フェンス付きの `graph TD` を text に入れます（OCR 本文は `raw.picture_text` に残します）。表は layout プロンプトが返す HTML、画面キャプチャ・写真・ロゴ・QR などは OCR 本文のままです。dots.mocr は図でない画像でも NONE を返さず捏造するため、Mermaid の応答は flowchart として妥当な文（ヘッダー・ノード・辺）だけ残し、辺が 2 本未満、またはノードラベルの重複が多い応答は捨てて OCR 本文に戻します。ビューアは ```` ```mermaid ```` を含む行を図として描画し、表の HTML と同じく「図を表示 / Mermaid を表示」のリンクで切り替えられます（MinerU の Mermaid 出力も同様に描画します）。
 
 公式 `prompt_ocr` は図の見出しだけを返すことがあり、`prompt_grounding_ocr` は bbox の座標系が processor 側の resize と一致せず別領域を読むため、この用途では使用していません。
 

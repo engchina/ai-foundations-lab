@@ -4,7 +4,7 @@ from pdf_layout_lab.settings import Settings
 
 from .base import LayoutAdapter
 from .docling_adapter import DoclingAdapter
-from .dots_mocr import DotsMocrAdapter
+from .dots_mocr import DotsMocrAdapter, DotsMocrApiAdapter
 from .mineru import MineruAdapter
 from .mineru_api import MineruApiAdapter
 from .oci_document import OciDocumentAdapter
@@ -18,6 +18,7 @@ ENGINE_ORDER = [
     "mineru",
     "mineru_api",
     "dots_mocr",
+    "dots_mocr_api",
     "unstructured",
     "docling",
     "pymupdf",
@@ -28,6 +29,7 @@ ENGINE_ORDER = [
 ENGINE_LABELS = {
     "oci": "OCI Document Understanding",
     "dots_mocr": "dots.mocr",
+    "dots_mocr_api": "dots.mocr (API)",
     "unstructured": "Unstructured",
     "docling": "Docling",
     "pp_doclayout_v3": "PP-DocLayoutV3",
@@ -44,6 +46,7 @@ def build_adapters(settings: Settings) -> dict[str, LayoutAdapter]:
         "mineru": MineruAdapter(settings),
         "mineru_api": MineruApiAdapter(settings),
         "dots_mocr": DotsMocrAdapter(settings),
+        "dots_mocr_api": DotsMocrApiAdapter(settings),
         "unstructured": UnstructuredAdapter(settings),
         "docling": DoclingAdapter(settings),
         "pymupdf": PyMuPdfAdapter(settings),

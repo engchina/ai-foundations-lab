@@ -393,6 +393,8 @@ class DotsMocrPictureOcrTests(unittest.TestCase):
 
             def fake_infer(path, prompt, backend, context, max_new_tokens=None):
                 prompts.append(prompt)
+                if "Classify this image" in prompt:
+                    return "Final answer: \\boxed{flowchart}"
                 if "Mermaid" in prompt:
                     return "graph TD\n    A[開始] --> B[計画員]\n    B --> C[終了 (完了)]"
                 return '{"elements": [{"bbox": [0, 0, 10, 10], "category": "Text", "text": "開始"}, {"bbox": [0, 20, 10, 30], "category": "Text", "text": "計画員"}]}'
@@ -410,11 +412,55 @@ class DotsMocrPictureOcrTests(unittest.TestCase):
 
         self.assertEqual(picture.text, '```mermaid\ngraph TD\n    A["開始"] --> B["計画員"]\n    B --> C["終了 (完了)"]\n```')
         self.assertEqual(picture.raw.get("picture_text"), "開始\n計画員")
+        self.assertEqual(picture.raw.get("picture_kind"), "flowchart")
         self.assertTrue(picture.raw.get("picture_ocr"))
         self.assertEqual(filled.text, "既にテキストがある")
-        self.assertEqual(len(prompts), 2)
+        self.assertEqual(len(prompts), 3)
         self.assertIn("Layout Categories", prompts[0])
-        self.assertIn("Mermaid", prompts[1])
+        self.assertIn("Classify this image", prompts[1])
+        self.assertIn("Mermaid", prompts[2])
+
+    def test_non_flowchart_picture_keeps_ocr_text(self):
+        from PIL import Image
+
+        from pdf_layout_lab.adapters.dots_mocr import DotsMocrAdapter
+        from pdf_layout_lab.adapters.base import AnalysisContext
+        from pdf_layout_lab.schemas import PageImage
+        from pdf_layout_lab.settings import get_settings
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            image_path = run_dir / "page.png"
+            Image.new("RGB", (800, 1000), "white").save(image_path)
+            page = PageImage(page=1, width=800, height=1000, pdf_width=595, pdf_height=842, image_path=str(image_path))
+            adapter = DotsMocrAdapter(get_settings())
+            prompts = []
+
+            def fake_infer(path, prompt, backend, context, max_new_tokens=None):
+                prompts.append(prompt)
+                if "Classify this image" in prompt:
+                    return "screenshot\n\n確認事項がある場合"
+                return '{"elements": [{"bbox": [0, 0, 10, 10], "category": "Text", "text": "画面の文字"}]}'
+
+            adapter._infer = fake_infer
+            picture = self._record([100, 100, 400, 500])
+            adapter._ocr_pictures(page, [picture], "transformers", AnalysisContext(pdf_path=run_dir / "s.pdf", run_dir=run_dir, pages=[page], settings=get_settings()))
+
+        self.assertEqual(picture.text, "画面の文字")
+        self.assertEqual(picture.raw.get("picture_kind"), "screenshot")
+        self.assertEqual(len(prompts), 2)  # Mermaid 生成は呼ばれない
+
+
+class DotsMocrPictureKindTests(unittest.TestCase):
+    def test_extracts_kind_from_various_answer_styles(self):
+        from pdf_layout_lab.adapters.dots_mocr import _picture_kind_from_response
+
+        self.assertEqual(_picture_kind_from_response("screenshot"), "screenshot")
+        self.assertEqual(_picture_kind_from_response("screenshot\n\n確認事項がある場合、お電話"), "screenshot")
+        self.assertEqual(_picture_kind_from_response("To determine... characteristic of a flowchart.\n\nFinal answer: \\boxed{flowchart}"), "flowchart")
+        self.assertEqual(_picture_kind_from_response("1. The image shows a stamp... not a flowchart, table...\n\n\\boxed{logo}"), "logo")
+        self.assertEqual(_picture_kind_from_response("It is not a flowchart or table.\nFinal answer: screenshot"), "screenshot")
+        self.assertEqual(_picture_kind_from_response(""), "other")
 
 
 class DotsMocrMermaidResponseTests(unittest.TestCase):
@@ -425,6 +471,25 @@ class DotsMocrMermaidResponseTests(unittest.TestCase):
         # QR コードや印鑑では同じラベルを繰り返す
         self.assertEqual(_mermaid_from_response("graph TD\n" + "\n".join(f"A --> B{i}[矩形]" for i in range(6))), "")
         self.assertEqual(_mermaid_from_response("graph TD\n    A[開始] --> B[終了]\n    style A fill:#fff"), "")  # 辺が 1 本だけ
+
+    def test_collapses_multiline_labels_and_comments(self):
+        from pdf_layout_lab.adapters.dots_mocr import _mermaid_from_response
+
+        response = "graph TD\n    A[開始] --> B[「履歴照会」では\n2025年3月9日以降の\n明細]\n    B --> C[終了]\n    %% コメント\n    classDef note fill:#fff;"
+        self.assertEqual(
+            _mermaid_from_response(response),
+            '```mermaid\ngraph TD\n    A["開始"] --> B["「履歴照会」では 2025年3月9日以降の 明細"]\n    B --> C["終了"]\n```',
+        )
+
+    def test_drops_non_flowchart_statements(self):
+        from pdf_layout_lab.adapters.dots_mocr import _mermaid_from_response
+
+        # シーケンス図の note 構文や、辺の後ろに続く余計な文字列は捨てる
+        response = "graph TD\n    A[はじめに] --> B[確認]\n    B --> C[次へ]\n    C --> A    note right of B: 確認事項がある場合\n    note right of C: 補足\n    click A href \"http://x\""
+        self.assertEqual(
+            _mermaid_from_response(response),
+            '```mermaid\ngraph TD\n    A["はじめに"] --> B["確認"]\n    B --> C["次へ"]\n    C --> A\n```',
+        )
 
     def test_strips_fence_and_style_lines(self):
         from pdf_layout_lab.adapters.dots_mocr import _mermaid_from_response
@@ -437,6 +502,19 @@ class DotsMocrMermaidResponseTests(unittest.TestCase):
 
 
 class DotsMocrPictureResponseTests(unittest.TestCase):
+    def test_truncated_json_salvages_unique_texts(self):
+        from pdf_layout_lab.adapters.dots_mocr import _texts_from_layout_response
+
+        # トークン上限で途中まで切れた、同じ要素を繰り返す応答
+        truncated = '[{"bbox": [1, 2, 3, 4], "category": "Text", "text": "票（普通发"}, ' * 3 + '{"bbox": [1, 2, 3, 4], "category": "Text", "text": "国家税务总局"}, {"bbox": [1, 2'
+        self.assertEqual(_texts_from_layout_response(truncated), "票（普通发\n国家税务总局")
+
+    def test_repeated_elements_are_deduplicated(self):
+        from pdf_layout_lab.adapters.dots_mocr import _texts_from_layout_response
+
+        response = '[{"bbox": [1, 2, 3, 4], "category": "Text", "text": "A"}, {"bbox": [1, 2, 3, 4], "category": "Text", "text": "A"}, {"bbox": [5, 6, 7, 8], "category": "Text", "text": "B"}]'
+        self.assertEqual(_texts_from_layout_response(response), "A\nB")
+
     def test_layout_json_without_text_stays_empty(self):
         from pdf_layout_lab.adapters.dots_mocr import _texts_from_layout_response
 

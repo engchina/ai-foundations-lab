@@ -85,7 +85,7 @@ def get_settings() -> Settings:
     load_dotenv()
     enabled = os.environ.get(
         "PDF_LAYOUT_LAB_ENABLED_ENGINES",
-        "oci,mineru,mineru_api,dots_mocr,unstructured,docling,pymupdf,yolov10,pp_doclayout_v3",
+        "oci,mineru,mineru_api,dots_mocr,dots_mocr_api,unstructured,docling,pymupdf,yolov10,pp_doclayout_v3",
     )
     enabled_engines = [part.strip() for part in enabled.split(",") if part.strip()]
     return Settings(

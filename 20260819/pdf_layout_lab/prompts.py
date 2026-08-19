@@ -23,6 +23,17 @@ PROMPT_LAYOUT_ALL_EN = """Please output the layout information from the PDF imag
 5. Final Output: The entire output must be a single JSON object.
 """
 
+# Picture 切り出し画像の種類を判定する独自プロンプト（dots.mocr 公式ではない）。
+# 一語で答えず説明を付けることが多いので、応答からキーワードを拾う前提
+PROMPT_PICTURE_KIND = """Classify this image. Answer with exactly one word from this list: flowchart, table, chart, screenshot, photo, logo, other.
+- flowchart: boxes or shapes connected by arrows or lines that show a process or flow.
+- table: rows and columns of cells.
+- chart: bar, line, or pie chart.
+- screenshot: a captured application, web page, or form UI.
+- photo: a photograph.
+- logo: a logo, stamp, seal, or QR/barcode.
+"""
+
 # Picture 切り出し画像から Mermaid を生成する独自プロンプト（dots.mocr 公式ではない）
 PROMPT_PICTURE_MERMAID = """Convert this image into a Mermaid flowchart that reproduces its structure (boxes, callouts, arrows, reading order).
 Rules:

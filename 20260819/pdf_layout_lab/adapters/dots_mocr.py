@@ -19,7 +19,7 @@ from typing import Any
 from pdf_layout_lab import model_pool
 from pdf_layout_lab.categories import normalize_category
 from pdf_layout_lab.coordinates import clamp_bbox
-from pdf_layout_lab.prompts import PROMPT_LAYOUT_ALL_EN, PROMPT_PICTURE_MERMAID
+from pdf_layout_lab.prompts import PROMPT_LAYOUT_ALL_EN, PROMPT_PICTURE_KIND, PROMPT_PICTURE_MERMAID
 from pdf_layout_lab.schemas import LayoutRecord
 from pdf_layout_lab.settings import Settings
 
@@ -37,13 +37,30 @@ _FLASH_ATTN_IMPORT_ERROR = (
 PICTURE_OCR_MAX_PER_PAGE = 8
 PICTURE_OCR_PADDING = 8
 PICTURE_OCR_MIN_SIDE = 32
+# 印鑑や QR のような画像では同じ要素を延々と繰り返すので、切り出しの再 OCR は短めに打ち切る
+PICTURE_OCR_MAX_NEW_TOKENS = 4096
+_JSON_TEXT_VALUE = re.compile(r'"text"\s*:\s*"((?:[^"\\]|\\.)*)"')
+PICTURE_KINDS = ("flowchart", "table", "chart", "screenshot", "photo", "logo", "other")
+PICTURE_KIND_MAX_NEW_TOKENS = 300
+_PICTURE_KIND_WORD = re.compile(r"\b(" + "|".join(PICTURE_KINDS) + r")\b", re.I)
+_PICTURE_KIND_FINAL = re.compile(r"(?:\\boxed\{|final answer\s*[:：]\s*\**)\s*(" + "|".join(PICTURE_KINDS) + r")\b", re.I)
 # 図でない画像だと延々と捏造を続けるので Mermaid 生成は短めに打ち切る
 PICTURE_MERMAID_MAX_NEW_TOKENS = 1024
 PICTURE_MERMAID_MIN_EDGES = 2
 PICTURE_MERMAID_MIN_UNIQUE_LABEL_RATIO = 0.6
-_MERMAID_STYLE_LINE = re.compile(r"^\s*(style|linkStyle|classDef|class)\b")
+# flowchart として妥当な文だけ残すホワイトリスト。dots.mocr は note / style / classDef / %% など
+# 別の図種の構文や装飾を混ぜてくるので、行頭から一致した部分だけを採用し残りは捨てる
+_MERMAID_NODE = r"[A-Za-z_][\w-]*(?:\[[^\]]*\]|\([^\)]*\)|\{[^\}]*\})?"
+_MERMAID_EDGE = r"(?:-->|---|-\.->|==>|-\.-)(?:\|[^|\n]*\|)?"
+_MERMAID_STATEMENT = re.compile(
+    rf"^\s*(?:(?:graph|flowchart)\s+(?:TD|TB|LR|RL|BT)\b|{_MERMAID_NODE}(?:\s*{_MERMAID_EDGE}\s*{_MERMAID_NODE})*)\s*;?"
+)
+# ID だけの文（note / style / classDef / click … の先頭語も ID に見える）は捨てる
+_MERMAID_BARE_ID = re.compile(r"^\s*[A-Za-z_][\w-]*\s*;?$")
+# vLLM 経由の応答はラベル内で改行することがある（[「履歴照会」では\n2025年…]）
+_MERMAID_MULTILINE_LABEL = re.compile(r"\[([^\]]*?)\]", re.S)
 # 開き括弧と同じ種類の閉じ括弧までをラベルとみなす（"終了 (完了)" のような括弧入りラベルを壊さない）
-_MERMAID_NODE_LABEL = re.compile(r'([A-Za-z_][\w-]*)(?:\[([^\]"]+)\]|\(([^\)"]+)\)|\{([^\}"]+)\})')
+_MERMAID_NODE_LABEL = re.compile(r'([A-Za-z_][\w-]*)(?:\["?([^\]"]+)"?\]|\("?([^\)"]+)"?\)|\{"?([^\}"]+)"?\})')
 
 
 def _save_picture_crop(page_picture, record: LayoutRecord, crop_dir: Path) -> Path | None:
@@ -67,11 +84,34 @@ def _texts_from_layout_response(response_text: str) -> str:
     try:
         payload = extract_first_json(response_text)
     except ValueError:
-        # JSON にならない応答はそのまま本文として扱う
-        return response_text.strip()
-    elements = coerce_layout_elements(payload)
-    texts = [str(element.get("text") or element.get("content") or "").strip() for element in elements]
-    return "\n".join(text for text in texts if text)
+        # トークン上限で途中まで切れた JSON からは "text" だけ救出し、それも無ければ応答をそのまま本文にする
+        texts = []
+        for escaped in _JSON_TEXT_VALUE.findall(response_text):
+            try:
+                texts.append(json.loads(f'"{escaped}"'))
+            except ValueError:
+                continue
+        if not texts:
+            return response_text.strip()
+    else:
+        elements = coerce_layout_elements(payload)
+        texts = [str(element.get("text") or element.get("content") or "") for element in elements]
+    # 繰り返し生成された同じ要素は 1 つにまとめる
+    return "\n".join(dict.fromkeys(text.strip() for text in texts if text.strip()))
+
+
+def _picture_kind_from_response(response_text: str) -> str:
+    """分類プロンプトの応答から画像の種類を取り出す。
+
+    dots.mocr は「screenshot」と一語で返すこともあれば、推論を書いてから
+    `\\boxed{flowchart}` や `Final answer: logo` で締めることもある。
+    """
+    final = _PICTURE_KIND_FINAL.findall(response_text)
+    if final:
+        return final[-1].lower()
+    first_line = response_text.strip().splitlines()[0] if response_text.strip() else ""
+    words = _PICTURE_KIND_WORD.findall(first_line) or _PICTURE_KIND_WORD.findall(response_text)
+    return words[-1].lower() if words else "other"
 
 
 def _mermaid_from_response(response_text: str) -> str:
@@ -83,7 +123,9 @@ def _mermaid_from_response(response_text: str) -> str:
     body = re.sub(r"^\s*```(?:mermaid)?\s*|\s*```\s*$", "", response_text.strip())
     if not re.match(r"\s*(graph|flowchart)\b", body):
         return ""
-    lines = [line for line in body.splitlines() if line.strip() and not _MERMAID_STYLE_LINE.match(line)]
+    body = _MERMAID_MULTILINE_LABEL.sub(lambda m: "[" + " ".join(m.group(1).split()) + "]", body)
+    lines = [match.group(0).rstrip() for match in map(_MERMAID_STATEMENT.match, body.splitlines()) if match]
+    lines = [line for line in lines if not _MERMAID_BARE_ID.match(line)]
     edges = [line for line in lines if "-->" in line]
     labels = [_mermaid_label(match) for match in _MERMAID_NODE_LABEL.finditer("\n".join(lines))]
     if len(edges) < PICTURE_MERMAID_MIN_EDGES or not labels:
@@ -136,8 +178,11 @@ class DotsMocrAdapter:
             f"DOTS_MOCR_BACKEND={self.settings.dots_mocr_backend!r} は未対応です。transformers または api を指定してください。",
         )
 
+    def _backend(self) -> str:
+        return _normalize_backend(self.settings.dots_mocr_backend)
+
     def analyze(self, context: AnalysisContext) -> list[LayoutRecord]:
-        backend = _normalize_backend(self.settings.dots_mocr_backend)
+        backend = self._backend()
         records: list[LayoutRecord] = []
         for page_image in context.pages:
             page_records: list[LayoutRecord] = []
@@ -155,7 +200,7 @@ class DotsMocrAdapter:
                 text = "" if category == "Picture" else str(element.get("text") or element.get("content") or "")
                 page_records.append(
                     LayoutRecord(
-                        id=f"dots-p{page_image.page}-{index}",
+                        id=f"{self.engine_id}-p{page_image.page}-{index}",
                         engine=self.engine_id,
                         page=page_image.page,
                         seq_no=index,
@@ -202,12 +247,21 @@ class DotsMocrAdapter:
             crop_path = _save_picture_crop(page_picture, record, crop_dir)
             if not crop_path:
                 continue
-            text = _texts_from_layout_response(self._infer(crop_path, PROMPT_LAYOUT_ALL_EN, backend, context))
+            text = _texts_from_layout_response(
+                self._infer(crop_path, PROMPT_LAYOUT_ALL_EN, backend, context, max_new_tokens=PICTURE_OCR_MAX_NEW_TOKENS)
+            )
             if not text:
                 continue
             record.text = text
             record.raw["picture_ocr"] = True
-            # 文字のある図だけ Mermaid 化を試み、通れば本文を置き換える（OCR 本文は raw に残す）
+            # 種類を判定し、フローチャートだけ Mermaid 化する。表は layout プロンプトが HTML を返し、
+            # 画面キャプチャ・写真・ロゴなどは OCR 本文のまま
+            kind = _picture_kind_from_response(
+                self._infer(crop_path, PROMPT_PICTURE_KIND, backend, context, max_new_tokens=PICTURE_KIND_MAX_NEW_TOKENS)
+            )
+            record.raw["picture_kind"] = kind
+            if kind != "flowchart":
+                continue
             mermaid = _mermaid_from_response(
                 self._infer(crop_path, PROMPT_PICTURE_MERMAID, backend, context, max_new_tokens=PICTURE_MERMAID_MAX_NEW_TOKENS)
             )
@@ -250,8 +304,8 @@ class DotsMocrAdapter:
             ],
             "temperature": 0,
         }
-        if max_new_tokens:
-            payload["max_tokens"] = max_new_tokens
+        # 未指定だと vLLM はコンテキスト上限（13 万トークン）まで生成を続けるので、ローカル版と同じ上限を必ず送る
+        payload["max_tokens"] = max_new_tokens or self.settings.dots_mocr_max_new_tokens
         data = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             url=f"{self.settings.dots_mocr_base_url.rstrip('/')}/chat/completions",
@@ -271,6 +325,24 @@ class DotsMocrAdapter:
         if time.monotonic() - started > self.settings.dots_mocr_timeout_seconds:
             raise RuntimeError("dots.mocr API がタイムアウトしました。")
         return str(result["choices"][0]["message"]["content"])
+
+
+class DotsMocrApiAdapter(DotsMocrAdapter):
+    """OpenAI 互換サーバー (vLLM など) 上の dots.mocr を常に API で呼ぶエンジン。ローカル版と並べて比較できる。"""
+
+    engine_id = "dots_mocr_api"
+    label = "dots.mocr (API)"
+
+    def availability(self) -> AdapterAvailability:
+        if not self.settings.dots_mocr_base_url:
+            return AdapterAvailability(False, "DOTS_MOCR_BASE_URL に OpenAI 互換サーバーの URL（例: http://127.0.0.1:8000/v1）を設定してください。")
+        return AdapterAvailability(True, f"OpenAI 互換 API `{self.settings.dots_mocr_base_url}` の `{self.settings.dots_mocr_model}` を呼び出します。")
+
+    def _backend(self) -> str:
+        return "api"
+
+    def preload(self) -> None:
+        return None
 
 
 class _LocalDotsMocrRuntime:
